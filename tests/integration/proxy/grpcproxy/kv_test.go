@@ -20,17 +20,18 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/proxy/grpcproxy"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
-	"google.golang.org/grpc"
 )
 
 func TestKVProxyRange(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	kvts := newKVProxyServer([]string{clus.Members[0].GRPCURL()}, t)

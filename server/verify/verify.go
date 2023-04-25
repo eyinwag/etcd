@@ -16,19 +16,21 @@ package verify
 
 import (
 	"fmt"
-	"os"
 
-	"go.etcd.io/etcd/raft/v3/raftpb"
+	"go.uber.org/zap"
+
+	"go.etcd.io/raft/v3/raftpb"
+
+	"go.etcd.io/etcd/client/pkg/v3/fileutil"
+	"go.etcd.io/etcd/client/pkg/v3/verify"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/datadir"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	wal2 "go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
-	"go.uber.org/zap"
 )
 
-const ENV_VERIFY = "ETCD_VERIFY"
-const ENV_VERIFY_ALL_VALUE = "all"
+const ENV_VERIFY_VALUE_STORAGE_WAL verify.VerificationType = "storage_wal"
 
 type Config struct {
 	// DataDir is a root directory where the data being verified are stored.
@@ -53,6 +55,11 @@ func Verify(cfg Config) error {
 		lg = zap.NewNop()
 	}
 
+	if !fileutil.Exist(datadir.ToBackendFileName(cfg.DataDir)) {
+		lg.Info("verification skipped due to non exist db file")
+		return nil
+	}
+
 	var err error
 	lg.Info("verification of persisted state", zap.String("data-dir", cfg.DataDir))
 	defer func() {
@@ -69,11 +76,7 @@ func Verify(cfg Config) error {
 		}
 	}()
 
-	beConfig := backend.DefaultBackendConfig()
-	beConfig.Path = datadir.ToBackendFileName(cfg.DataDir)
-	beConfig.Logger = cfg.Logger
-
-	be := backend.New(beConfig)
+	be := backend.NewDefaultBackend(lg, datadir.ToBackendFileName(cfg.DataDir))
 	defer be.Close()
 
 	snapshot, hardstate, err := validateWal(cfg)
@@ -90,7 +93,7 @@ func Verify(cfg Config) error {
 // VerifyIfEnabled performs verification according to ETCD_VERIFY env settings.
 // See Verify for more information.
 func VerifyIfEnabled(cfg Config) error {
-	if os.Getenv(ENV_VERIFY) == ENV_VERIFY_ALL_VALUE {
+	if verify.IsVerificationEnabled(ENV_VERIFY_VALUE_STORAGE_WAL) {
 		return Verify(cfg)
 	}
 	return nil
@@ -108,8 +111,7 @@ func MustVerifyIfEnabled(cfg Config) {
 }
 
 func validateConsistentIndex(cfg Config, hardstate *raftpb.HardState, snapshot *walpb.Snapshot, be backend.Backend) error {
-	tx := be.BatchTx()
-	index, term := schema.ReadConsistentIndex(tx)
+	index, term := schema.ReadConsistentIndex(be.ReadTx())
 	if cfg.ExactIndex && index != hardstate.Commit {
 		return fmt.Errorf("backend.ConsistentIndex (%v) expected == WAL.HardState.commit (%v)", index, hardstate.Commit)
 	}

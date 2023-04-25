@@ -22,10 +22,10 @@ import (
 
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
-	"go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	stats "go.etcd.io/etcd/server/v3/etcdserver/api/v2stats"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 
 	"github.com/xiang90/probing"
 	"go.uber.org/zap"
@@ -186,7 +186,7 @@ func (t *Transport) Send(msgs []raftpb.Message) {
 		t.mu.RUnlock()
 
 		if pok {
-			if m.Type == raftpb.MsgApp {
+			if isMsgApp(m) {
 				t.ServerStats.SendAppendReq(m.Size())
 			}
 			p.send(m)
@@ -339,24 +339,30 @@ func (t *Transport) RemoveAllPeers() {
 
 // the caller of this function must have the peers mutex.
 func (t *Transport) removePeer(id types.ID) {
-	if peer, ok := t.peers[id]; ok {
+	// etcd may remove a member again on startup due to WAL files replaying.
+	peer, ok := t.peers[id]
+	if ok {
 		peer.stop()
-	} else {
-		if t.Logger != nil {
-			t.Logger.Panic("unexpected removal of unknown remote peer", zap.String("remote-peer-id", id.String()))
-		}
+		delete(t.peers, id)
+		delete(t.LeaderStats.Followers, id.String())
+		t.pipelineProber.Remove(id.String())
+		t.streamProber.Remove(id.String())
 	}
-	delete(t.peers, id)
-	delete(t.LeaderStats.Followers, id.String())
-	t.pipelineProber.Remove(id.String())
-	t.streamProber.Remove(id.String())
 
 	if t.Logger != nil {
-		t.Logger.Info(
-			"removed remote peer",
-			zap.String("local-member-id", t.ID.String()),
-			zap.String("removed-remote-peer-id", id.String()),
-		)
+		if ok {
+			t.Logger.Info(
+				"removed remote peer",
+				zap.String("local-member-id", t.ID.String()),
+				zap.String("removed-remote-peer-id", id.String()),
+			)
+		} else {
+			t.Logger.Warn(
+				"skipped removing already removed peer",
+				zap.String("local-member-id", t.ID.String()),
+				zap.String("removed-remote-peer-id", id.String()),
+			)
+		}
 	}
 }
 

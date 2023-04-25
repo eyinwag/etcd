@@ -15,21 +15,22 @@
 package testing
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"go.uber.org/zap/zaptest"
+
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
-	"go.uber.org/zap/zaptest"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 func NewTmpWAL(t testing.TB, reqs []etcdserverpb.InternalRaftRequest) (*wal.WAL, string) {
 	t.Helper()
-	dir, err := ioutil.TempDir(t.TempDir(), "etcd_wal_test")
+	dir, err := os.MkdirTemp(t.TempDir(), "etcd_wal_test")
 	if err != nil {
 		panic(err)
 	}
@@ -52,7 +53,7 @@ func NewTmpWAL(t testing.TB, reqs []etcdserverpb.InternalRaftRequest) (*wal.WAL,
 		if err != nil {
 			t.Fatalf("Failed to read WAL: %v", err)
 		}
-		entries := []raftpb.Entry{}
+		var entries []raftpb.Entry
 		for _, req := range reqs {
 			entries = append(entries, raftpb.Entry{
 				Term:  1,

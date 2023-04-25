@@ -16,17 +16,17 @@ package integration
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	grpc_logsettable "github.com/grpc-ecosystem/go-grpc-middleware/logging/settable"
-	"go.etcd.io/etcd/client/pkg/v3/testutil"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/server/v3/embed"
-	"go.etcd.io/etcd/server/v3/verify"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zapgrpc"
 	"go.uber.org/zap/zaptest"
+
+	"go.etcd.io/etcd/client/pkg/v3/testutil"
+	"go.etcd.io/etcd/client/pkg/v3/verify"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/embed"
 )
 
 var grpc_logger grpc_logsettable.SettableLoggerV2
@@ -72,6 +72,10 @@ func BeforeTest(t testutil.TB, opts ...TestOption) {
 	t.Helper()
 	options := newTestOptions(opts...)
 
+	if insideTestContext {
+		t.Fatal("already in test context. BeforeTest was likely already called")
+	}
+
 	if options.skipInShort {
 		testutil.SkipTestIfShortMode(t, "Cannot create clusters in --short tests")
 	}
@@ -86,22 +90,20 @@ func BeforeTest(t testutil.TB, opts ...TestOption) {
 	}
 	previousInsideTestContext := insideTestContext
 
+	// Integration tests should verify written state as much as possible.
+	revertFunc := verify.EnableAllVerifications()
+
 	// Registering cleanup early, such it will get executed even if the helper fails.
 	t.Cleanup(func() {
 		grpc_logger.Reset()
 		insideTestContext = previousInsideTestContext
 		os.Chdir(previousWD)
+		revertFunc()
 	})
-
-	if insideTestContext {
-		t.Fatal("already in test context. BeforeTest was likely already called")
-	}
 
 	grpc_logger.Set(zapgrpc.NewLogger(zaptest.NewLogger(t).Named("grpc")))
 	insideTestContext = true
 
-	// Integration tests should verify written state as much as possible.
-	os.Setenv(verify.ENV_VERIFY, verify.ENV_VERIFY_ALL_VALUE)
 	os.Chdir(t.TempDir())
 }
 
@@ -109,14 +111,6 @@ func assertInTestContext(t testutil.TB) {
 	if !insideTestContext {
 		t.Errorf("the function can be called only in the test context. Was integration.BeforeTest() called ?")
 	}
-}
-
-func MustAbsPath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		panic(err)
-	}
-	return abs
 }
 
 func NewEmbedConfig(t testing.TB, name string) *embed.Config {

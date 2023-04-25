@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build tools
+//go:build tools
 
 // This file implements that pattern:
 // https://github.com/golang/go/wiki/Modules#how-can-i-track-tool-dependencies-for-a-module
@@ -23,6 +23,8 @@ package tools
 import (
 	_ "github.com/alexkohler/nakedret"
 	_ "github.com/chzchzchz/goword"
+	_ "github.com/cloudflare/cfssl/cmd/cfssl"
+	_ "github.com/cloudflare/cfssl/cmd/cfssljson"
 	_ "github.com/coreos/license-bill-of-materials"
 	_ "github.com/google/addlicense"
 	_ "github.com/gordonklaus/ineffassign"
@@ -32,10 +34,12 @@ import (
 	_ "github.com/hexfusion/schwag"
 	_ "github.com/mdempsky/unconvert"
 	_ "github.com/mgechev/revive"
-	_ "github.com/mikefarah/yq/v3"
-	_ "gotest.tools"
-	_ "gotest.tools/gotestsum"
+	_ "github.com/mikefarah/yq/v4"
+	_ "go.etcd.io/gofail"
 	_ "go.etcd.io/protodoc"
+	_ "go.etcd.io/raft/v3"
+	_ "gotest.tools/gotestsum"
+	_ "gotest.tools/v3"
 	_ "honnef.co/go/tools/cmd/staticcheck"
 	_ "mvdan.cc/unparam"
 )

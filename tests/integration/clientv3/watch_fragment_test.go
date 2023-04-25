@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build !cluster_proxy
-// +build !cluster_proxy
 
 package clientv3test
 
@@ -25,7 +24,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
 )
 
@@ -73,7 +72,7 @@ func testWatchFragment(t *testing.T, fragment, exceedRecvLimit bool) {
 	if exceedRecvLimit {
 		cfg.ClientMaxCallRecvMsgSize = 1.5 * 1024 * 1024
 	}
-	clus := integration2.NewClusterV3(t, cfg)
+	clus := integration2.NewCluster(t, cfg)
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)

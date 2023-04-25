@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
@@ -54,7 +54,7 @@ func TestSnapshotV3RestoreMultiMemberAdd(t *testing.T) {
 	}
 	defer cli.Close()
 
-	urls := newEmbedURLs(2)
+	urls := newEmbedURLs(t, 2)
 	newCURLs, newPURLs := urls[:1], urls[1:]
 	if _, err = cli.MemberAdd(context.Background(), []string{newPURLs[0].String()}); err != nil {
 		t.Fatal(err)
@@ -66,8 +66,8 @@ func TestSnapshotV3RestoreMultiMemberAdd(t *testing.T) {
 	cfg := integration2.NewEmbedConfig(t, "3")
 	cfg.InitialClusterToken = testClusterTkn
 	cfg.ClusterState = "existing"
-	cfg.LCUrls, cfg.ACUrls = newCURLs, newCURLs
-	cfg.LPUrls, cfg.APUrls = newPURLs, newPURLs
+	cfg.ListenClientUrls, cfg.AdvertiseClientUrls = newCURLs, newCURLs
+	cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = newPURLs, newPURLs
 	cfg.InitialCluster = ""
 	for i := 0; i < clusterN; i++ {
 		cfg.InitialCluster += fmt.Sprintf(",%d=%s", i, pURLs[i].String())

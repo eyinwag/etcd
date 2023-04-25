@@ -21,7 +21,7 @@ import (
 	"os"
 	"strconv"
 
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type jsonPrinter struct {
@@ -67,7 +67,7 @@ func printMemberListWithHexJSON(r clientv3.MemberListResponse) {
 	b = strconv.AppendUint(nil, r.Header.MemberId, 16)
 	buffer.Write(b)
 	buffer.WriteString("\",\"raft_term\":")
-	b = strconv.AppendUint(nil, r.Header.RaftTerm, 16)
+	b = strconv.AppendUint(nil, r.Header.RaftTerm, 10)
 	buffer.Write(b)
 	buffer.WriteByte('}')
 	for i := 0; i < len(r.Members); i++ {
@@ -84,7 +84,7 @@ func printMemberListWithHexJSON(r clientv3.MemberListResponse) {
 			return
 		}
 		buffer.Write(b)
-		buffer.WriteString(",\"clientURLS\":")
+		buffer.WriteString(",\"clientURLs\":")
 		b, err = json.Marshal(r.Members[i].ClientURLs)
 		if err != nil {
 			return

@@ -40,6 +40,9 @@ func TestNewKeepAliveListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected Accept error: %v", err)
 	}
+	if _, ok := conn.(*keepAliveConn); !ok {
+		t.Fatalf("Unexpected conn type: %T, wanted *keepAliveConn", conn)
+	}
 	conn.Close()
 	ln.Close()
 
@@ -49,11 +52,10 @@ func TestNewKeepAliveListener(t *testing.T) {
 	}
 
 	// tls
-	tlsinfo, del, err := createSelfCert()
+	tlsinfo, err := createSelfCert(t)
 	if err != nil {
 		t.Fatalf("unable to create tmpfile: %v", err)
 	}
-	defer del()
 	tlsInfo := TLSInfo{CertFile: tlsinfo.CertFile, KeyFile: tlsinfo.KeyFile}
 	tlsInfo.parseFunc = fakeCertificateParserFunc(tls.Certificate{}, nil)
 	tlscfg, err := tlsInfo.ServerConfig()

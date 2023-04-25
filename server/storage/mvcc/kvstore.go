@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"math"
 	"sync"
 	"time"
@@ -83,7 +82,8 @@ type store struct {
 
 	stopc chan struct{}
 
-	lg *zap.Logger
+	lg     *zap.Logger
+	hashes HashStorage
 }
 
 // NewStore returns a new store. It is useful to create a store inside
@@ -108,12 +108,13 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfi
 		currentRev:     1,
 		compactMainRev: -1,
 
-		fifoSched: schedule.NewFIFOScheduler(),
+		fifoSched: schedule.NewFIFOScheduler(lg),
 
 		stopc: make(chan struct{}),
 
 		lg: lg,
 	}
+	s.hashes = newHashStorage(lg, s)
 	s.ReadView = &readView{s}
 	s.WriteView = &writeView{s}
 	if s.le != nil {
@@ -121,7 +122,7 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, cfg StoreConfi
 	}
 
 	tx := s.b.BatchTx()
-	tx.Lock()
+	tx.LockOutsideApply()
 	tx.UnsafeCreateBucket(schema.Key)
 	schema.UnsafeCreateMetaBucket(tx)
 	tx.Unlock()
@@ -142,12 +143,12 @@ func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
 		select {
 		case <-s.stopc:
 		default:
-			// fix deadlock in mvcc,for more information, please refer to pr 11817.
+			// fix deadlock in mvcc, for more information, please refer to pr 11817.
 			// s.stopc is only updated in restore operation, which is called by apply
 			// snapshot call, compaction and apply snapshot requests are serialized by
 			// raft, and do not happen at the same time.
 			s.mu.Lock()
-			f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
+			f := schedule.NewJob("kvstore_compactBarrier", func(ctx context.Context) { s.compactBarrier(ctx, ch) })
 			s.fifoSched.Schedule(f)
 			s.mu.Unlock()
 		}
@@ -156,7 +157,7 @@ func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
 	close(ch)
 }
 
-func (s *store) Hash() (hash uint32, revision int64, err error) {
+func (s *store) hash() (hash uint32, revision int64, err error) {
 	// TODO: hash and revision could be inconsistent, one possible fix is to add s.revMu.RLock() at the beginning of function, which is costly
 	start := time.Now()
 
@@ -167,7 +168,8 @@ func (s *store) Hash() (hash uint32, revision int64, err error) {
 	return h, s.currentRev, err
 }
 
-func (s *store) HashByRev(rev int64) (hash uint32, currentRev int64, compactRev int64, err error) {
+func (s *store) hashByRev(rev int64) (hash KeyValueHash, currentRev int64, err error) {
+	var compactRev int64
 	start := time.Now()
 
 	s.mu.RLock()
@@ -175,14 +177,13 @@ func (s *store) HashByRev(rev int64) (hash uint32, currentRev int64, compactRev 
 	compactRev, currentRev = s.compactMainRev, s.currentRev
 	s.revMu.RUnlock()
 
-	if rev > 0 && rev <= compactRev {
+	if rev > 0 && rev < compactRev {
 		s.mu.RUnlock()
-		return 0, 0, compactRev, ErrCompacted
+		return KeyValueHash{}, 0, ErrCompacted
 	} else if rev > 0 && rev > currentRev {
 		s.mu.RUnlock()
-		return 0, currentRev, 0, ErrFutureRev
+		return KeyValueHash{}, currentRev, ErrFutureRev
 	}
-
 	if rev == 0 {
 		rev = currentRev
 	}
@@ -192,75 +193,54 @@ func (s *store) HashByRev(rev int64) (hash uint32, currentRev int64, compactRev 
 	tx.RLock()
 	defer tx.RUnlock()
 	s.mu.RUnlock()
-
-	upper := revision{main: rev + 1}
-	lower := revision{main: compactRev + 1}
-	h := crc32.New(crc32.MakeTable(crc32.Castagnoli))
-
-	h.Write(schema.Key.Name())
-	err = tx.UnsafeForEach(schema.Key, func(k, v []byte) error {
-		kr := bytesToRev(k)
-		if !upper.GreaterThan(kr) {
-			return nil
-		}
-		// skip revisions that are scheduled for deletion
-		// due to compacting; don't skip if there isn't one.
-		if lower.GreaterThan(kr) && len(keep) > 0 {
-			if _, ok := keep[kr]; !ok {
-				return nil
-			}
-		}
-		h.Write(k)
-		h.Write(v)
-		return nil
-	})
-	hash = h.Sum32()
-
+	hash, err = unsafeHashByRev(tx, compactRev, rev, keep)
 	hashRevSec.Observe(time.Since(start).Seconds())
-	return hash, currentRev, compactRev, err
+	return hash, currentRev, err
 }
 
-func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
+func (s *store) updateCompactRev(rev int64) (<-chan struct{}, int64, error) {
 	s.revMu.Lock()
 	if rev <= s.compactMainRev {
 		ch := make(chan struct{})
-		f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
+		f := schedule.NewJob("kvstore_updateCompactRev_compactBarrier", func(ctx context.Context) { s.compactBarrier(ctx, ch) })
 		s.fifoSched.Schedule(f)
 		s.revMu.Unlock()
-		return ch, ErrCompacted
+		return ch, 0, ErrCompacted
 	}
 	if rev > s.currentRev {
 		s.revMu.Unlock()
-		return nil, ErrFutureRev
+		return nil, 0, ErrFutureRev
 	}
-
+	compactMainRev := s.compactMainRev
 	s.compactMainRev = rev
 
 	SetScheduledCompact(s.b.BatchTx(), rev)
 	// ensure that desired compaction is persisted
+	// gofail: var compactBeforeCommitScheduledCompact struct{}
 	s.b.ForceCommit()
+	// gofail: var compactAfterCommitScheduledCompact struct{}
 
 	s.revMu.Unlock()
 
-	return nil, nil
+	return nil, compactMainRev, nil
 }
 
-func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, error) {
+func (s *store) compact(trace *traceutil.Trace, rev, prevCompactRev int64) (<-chan struct{}, error) {
 	ch := make(chan struct{})
-	var j = func(ctx context.Context) {
+	j := schedule.NewJob("kvstore_compact", func(ctx context.Context) {
 		if ctx.Err() != nil {
 			s.compactBarrier(ctx, ch)
 			return
 		}
-		start := time.Now()
-		keep := s.kvindex.Compact(rev)
-		indexCompactionPauseMs.Observe(float64(time.Since(start) / time.Millisecond))
-		if !s.scheduleCompaction(rev, keep) {
+		hash, err := s.scheduleCompaction(rev, prevCompactRev)
+		if err != nil {
+			s.lg.Warn("Failed compaction", zap.Error(err))
 			s.compactBarrier(context.TODO(), ch)
 			return
 		}
+		s.hashes.Store(hash)
 		close(ch)
-	}
+	})
 
 	s.fifoSched.Schedule(j)
 	trace.Step("schedule compaction")
@@ -268,18 +248,18 @@ func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 }
 
 func (s *store) compactLockfree(rev int64) (<-chan struct{}, error) {
-	ch, err := s.updateCompactRev(rev)
+	ch, prevCompactRev, err := s.updateCompactRev(rev)
 	if err != nil {
 		return ch, err
 	}
 
-	return s.compact(traceutil.TODO(), rev)
+	return s.compact(traceutil.TODO(), rev, prevCompactRev)
 }
 
 func (s *store) Compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, error) {
 	s.mu.Lock()
 
-	ch, err := s.updateCompactRev(rev)
+	ch, prevCompactRev, err := s.updateCompactRev(rev)
 	trace.Step("check and update compact revision")
 	if err != nil {
 		s.mu.Unlock()
@@ -287,7 +267,7 @@ func (s *store) Compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 	}
 	s.mu.Unlock()
 
-	return s.compact(trace, rev)
+	return s.compact(trace, rev, prevCompactRev)
 }
 
 func (s *store) Commit() {
@@ -314,7 +294,7 @@ func (s *store) Restore(b backend.Backend) error {
 		s.revMu.Unlock()
 	}
 
-	s.fifoSched = schedule.NewFIFOScheduler()
+	s.fifoSched = schedule.NewFIFOScheduler(s.lg)
 	s.stopc = make(chan struct{})
 
 	return s.restore()
@@ -330,7 +310,7 @@ func (s *store) restore() error {
 	keyToLease := make(map[string]lease.LeaseID)
 
 	// restore index
-	tx := s.b.BatchTx()
+	tx := s.b.ReadTx()
 	tx.Lock()
 
 	finishedCompact, found := UnsafeReadFinishedCompact(tx)
@@ -500,9 +480,6 @@ func (s *store) setupMetricsReporter() {
 	reportDbTotalSizeInBytesMu.Lock()
 	reportDbTotalSizeInBytes = func() float64 { return float64(b.Size()) }
 	reportDbTotalSizeInBytesMu.Unlock()
-	reportDbTotalSizeInBytesDebugMu.Lock()
-	reportDbTotalSizeInBytesDebug = func() float64 { return float64(b.Size()) }
-	reportDbTotalSizeInBytesDebugMu.Unlock()
 	reportDbTotalSizeInUseInBytesMu.Lock()
 	reportDbTotalSizeInUseInBytes = func() float64 { return float64(b.SizeInUse()) }
 	reportDbTotalSizeInUseInBytesMu.Unlock()
@@ -540,4 +517,8 @@ func appendMarkTombstone(lg *zap.Logger, b []byte) []byte {
 // isTombstone checks whether the revision bytes is a tombstone.
 func isTombstone(b []byte) bool {
 	return len(b) == markedRevBytesLen && b[markBytePosition] == markTombstone
+}
+
+func (s *store) HashStorage() HashStorage {
+	return s.hashes
 }

@@ -16,32 +16,30 @@ package embed
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	defaultLog "log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
+	"go.etcd.io/etcd/client/v3/credentials"
 	"go.etcd.io/etcd/pkg/v3/debugutil"
 	runtimeutil "go.etcd.io/etcd/pkg/v3/runtime"
 	"go.etcd.io/etcd/server/v3/config"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/etcdhttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v2http"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v2v3"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v3rpc"
 	"go.etcd.io/etcd/server/v3/storage"
 	"go.etcd.io/etcd/server/v3/verify"
 
@@ -49,6 +47,7 @@ import (
 	"github.com/soheilhy/cmux"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -124,7 +123,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 	}
 	e.cfg.logger.Info(
 		"configuring peer listeners",
-		zap.Strings("listen-peer-urls", e.cfg.getLPURLs()),
+		zap.Strings("listen-peer-urls", e.cfg.getListenPeerUrls()),
 	)
 	if e.Peers, err = configurePeerListeners(cfg); err != nil {
 		return e, err
@@ -132,7 +131,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 	e.cfg.logger.Info(
 		"configuring client listeners",
-		zap.Strings("listen-client-urls", e.cfg.getLCURLs()),
+		zap.Strings("listen-client-urls", e.cfg.getListenClientUrls()),
 	)
 	if e.sctxs, err = configureClientListeners(cfg); err != nil {
 		return e, err
@@ -168,8 +167,8 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 	srvcfg := config.ServerConfig{
 		Name:                                     cfg.Name,
-		ClientURLs:                               cfg.ACUrls,
-		PeerURLs:                                 cfg.APUrls,
+		ClientURLs:                               cfg.AdvertiseClientUrls,
+		PeerURLs:                                 cfg.AdvertisePeerUrls,
 		DataDir:                                  cfg.Dir,
 		DedicatedWALDir:                          cfg.WalDir,
 		SnapshotCount:                            cfg.SnapshotCount,
@@ -180,10 +179,12 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		InitialClusterToken:                      token,
 		DiscoveryURL:                             cfg.Durl,
 		DiscoveryProxy:                           cfg.Dproxy,
+		DiscoveryCfg:                             cfg.DiscoveryCfg,
 		NewCluster:                               cfg.IsNewCluster(),
 		PeerTLSInfo:                              cfg.PeerTLSInfo,
 		TickMs:                                   cfg.TickMs,
 		ElectionTicks:                            cfg.ElectionTicks(),
+		WaitClusterReadyTimeout:                  cfg.ExperimentalWaitClusterReadyTimeout,
 		InitialElectionTickAdvance:               cfg.InitialElectionTickAdvance,
 		AutoCompactionRetention:                  autoCompactionRetention,
 		AutoCompactionMode:                       cfg.AutoCompactionMode,
@@ -193,6 +194,7 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		BackendBatchInterval:                     cfg.BackendBatchInterval,
 		MaxTxnOps:                                cfg.MaxTxnOps,
 		MaxRequestBytes:                          cfg.MaxRequestBytes,
+		MaxConcurrentStreams:                     cfg.MaxConcurrentStreams,
 		SocketOpts:                               cfg.SocketOpts,
 		StrictReconfigCheck:                      cfg.StrictReconfigCheck,
 		ClientCertAuthEnabled:                    cfg.ClientTLSInfo.ClientCertAuth,
@@ -203,6 +205,8 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		HostWhitelist:                            cfg.HostWhitelist,
 		InitialCorruptCheck:                      cfg.ExperimentalInitialCorruptCheck,
 		CorruptCheckTime:                         cfg.ExperimentalCorruptCheckTime,
+		CompactHashCheckEnabled:                  cfg.ExperimentalCompactHashCheckEnabled,
+		CompactHashCheckTime:                     cfg.ExperimentalCompactHashCheckTime,
 		PreVote:                                  cfg.PreVote,
 		Logger:                                   cfg.logger,
 		ForceNewCluster:                          cfg.ForceNewCluster,
@@ -210,12 +214,13 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		ExperimentalEnableDistributedTracing:     cfg.ExperimentalEnableDistributedTracing,
 		UnsafeNoFsync:                            cfg.UnsafeNoFsync,
 		EnableLeaseCheckpoint:                    cfg.ExperimentalEnableLeaseCheckpoint,
+		LeaseCheckpointPersist:                   cfg.ExperimentalEnableLeaseCheckpointPersist,
 		CompactionBatchLimit:                     cfg.ExperimentalCompactionBatchLimit,
 		CompactionSleepInterval:                  cfg.ExperimentalCompactionSleepInterval,
 		WatchProgressNotifyInterval:              cfg.ExperimentalWatchProgressNotifyInterval,
 		DowngradeCheckTime:                       cfg.ExperimentalDowngradeCheckTime,
 		WarningApplyDuration:                     cfg.ExperimentalWarningApplyDuration,
-		WarningUnaryRequestDuration:              cfg.ExperimentalWarningUnaryRequestDuration,
+		WarningUnaryRequestDuration:              cfg.WarningUnaryRequestDuration,
 		ExperimentalMemoryMlock:                  cfg.ExperimentalMemoryMlock,
 		ExperimentalTxnModeWriteWithSharedBuffer: cfg.ExperimentalTxnModeWriteWithSharedBuffer,
 		ExperimentalBootstrapDefragThresholdMegabytes: cfg.ExperimentalBootstrapDefragThresholdMegabytes,
@@ -225,15 +230,14 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 	if srvcfg.ExperimentalEnableDistributedTracing {
 		tctx := context.Background()
-		tracingExporter, opts, err := setupTracingExporter(tctx, cfg)
+		tracingExporter, err := newTracingExporter(tctx, cfg)
 		if err != nil {
 			return e, err
 		}
-		if tracingExporter == nil || len(opts) == 0 {
-			return e, fmt.Errorf("error setting up distributed tracing")
+		e.tracingExporterShutdown = func() {
+			tracingExporter.Close(tctx)
 		}
-		e.tracingExporterShutdown = func() { tracingExporter.Shutdown(tctx) }
-		srvcfg.ExperimentalTracerOptions = opts
+		srvcfg.ExperimentalTracerOptions = tracingExporter.opts
 
 		e.cfg.logger.Info(
 			"distributed tracing setup enabled",
@@ -251,8 +255,8 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 	// newly started member ("memberInitialized==false")
 	// does not need corruption check
-	if memberInitialized {
-		if err = e.Server.CheckInitialHashKV(); err != nil {
+	if memberInitialized && srvcfg.InitialCorruptCheck {
+		if err = e.Server.CorruptionChecker().InitialCheck(); err != nil {
 			// set "EtcdServer" to nil, so that it does not block on "EtcdServer.Close()"
 			// (nothing to close since rafthttp transports have not been started)
 
@@ -276,11 +280,11 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 
 	e.cfg.logger.Info(
 		"now serving peer/client/metrics",
-		zap.String("local-member-id", e.Server.ID().String()),
-		zap.Strings("initial-advertise-peer-urls", e.cfg.getAPURLs()),
-		zap.Strings("listen-peer-urls", e.cfg.getLPURLs()),
-		zap.Strings("advertise-client-urls", e.cfg.getACURLs()),
-		zap.Strings("listen-client-urls", e.cfg.getLCURLs()),
+		zap.String("local-member-id", e.Server.MemberId().String()),
+		zap.Strings("initial-advertise-peer-urls", e.cfg.getAdvertisePeerUrls()),
+		zap.Strings("listen-peer-urls", e.cfg.getListenPeerUrls()),
+		zap.Strings("advertise-client-urls", e.cfg.getAdvertiseClientUrls()),
+		zap.Strings("listen-client-urls", e.cfg.getListenClientUrls()),
 		zap.Strings("listen-metrics-urls", e.cfg.getMetricsURLs()),
 	)
 	serving = true
@@ -323,28 +327,50 @@ func print(lg *zap.Logger, ec Config, sc config.ServerConfig, memberInitialized 
 		zap.Bool("force-new-cluster", sc.ForceNewCluster),
 		zap.String("heartbeat-interval", fmt.Sprintf("%v", time.Duration(sc.TickMs)*time.Millisecond)),
 		zap.String("election-timeout", fmt.Sprintf("%v", time.Duration(sc.ElectionTicks*int(sc.TickMs))*time.Millisecond)),
+		zap.String("wait-cluster-ready-timeout", sc.WaitClusterReadyTimeout.String()),
 		zap.Bool("initial-election-tick-advance", sc.InitialElectionTickAdvance),
 		zap.Uint64("snapshot-count", sc.SnapshotCount),
+		zap.Uint("max-wals", sc.MaxWALFiles),
+		zap.Uint("max-snapshots", sc.MaxSnapFiles),
 		zap.Uint64("snapshot-catchup-entries", sc.SnapshotCatchUpEntries),
-		zap.Strings("initial-advertise-peer-urls", ec.getAPURLs()),
-		zap.Strings("listen-peer-urls", ec.getLPURLs()),
-		zap.Strings("advertise-client-urls", ec.getACURLs()),
-		zap.Strings("listen-client-urls", ec.getLCURLs()),
+		zap.Strings("initial-advertise-peer-urls", ec.getAdvertisePeerUrls()),
+		zap.Strings("listen-peer-urls", ec.getListenPeerUrls()),
+		zap.Strings("advertise-client-urls", ec.getAdvertiseClientUrls()),
+		zap.Strings("listen-client-urls", ec.getListenClientUrls()),
 		zap.Strings("listen-metrics-urls", ec.getMetricsURLs()),
 		zap.Strings("cors", cors),
 		zap.Strings("host-whitelist", hss),
 		zap.String("initial-cluster", sc.InitialPeerURLsMap.String()),
 		zap.String("initial-cluster-state", ec.ClusterState),
 		zap.String("initial-cluster-token", sc.InitialClusterToken),
-		zap.Int64("quota-size-bytes", quota),
+		zap.Int64("quota-backend-bytes", quota),
+		zap.Uint("max-request-bytes", sc.MaxRequestBytes),
+		zap.Uint32("max-concurrent-streams", sc.MaxConcurrentStreams),
+
 		zap.Bool("pre-vote", sc.PreVote),
 		zap.Bool("initial-corrupt-check", sc.InitialCorruptCheck),
 		zap.String("corrupt-check-time-interval", sc.CorruptCheckTime.String()),
+		zap.Bool("compact-check-time-enabled", sc.CompactHashCheckEnabled),
+		zap.Duration("compact-check-time-interval", sc.CompactHashCheckTime),
 		zap.String("auto-compaction-mode", sc.AutoCompactionMode),
 		zap.Duration("auto-compaction-retention", sc.AutoCompactionRetention),
 		zap.String("auto-compaction-interval", sc.AutoCompactionRetention.String()),
 		zap.String("discovery-url", sc.DiscoveryURL),
 		zap.String("discovery-proxy", sc.DiscoveryProxy),
+
+		zap.String("discovery-token", sc.DiscoveryCfg.Token),
+		zap.String("discovery-endpoints", strings.Join(sc.DiscoveryCfg.Endpoints, ",")),
+		zap.String("discovery-dial-timeout", sc.DiscoveryCfg.DialTimeout.String()),
+		zap.String("discovery-request-timeout", sc.DiscoveryCfg.RequestTimeout.String()),
+		zap.String("discovery-keepalive-time", sc.DiscoveryCfg.KeepAliveTime.String()),
+		zap.String("discovery-keepalive-timeout", sc.DiscoveryCfg.KeepAliveTimeout.String()),
+		zap.Bool("discovery-insecure-transport", sc.DiscoveryCfg.Secure.InsecureTransport),
+		zap.Bool("discovery-insecure-skip-tls-verify", sc.DiscoveryCfg.Secure.InsecureSkipVerify),
+		zap.String("discovery-cert", sc.DiscoveryCfg.Secure.Cert),
+		zap.String("discovery-key", sc.DiscoveryCfg.Secure.Key),
+		zap.String("discovery-cacert", sc.DiscoveryCfg.Secure.Cacert),
+		zap.String("discovery-user", sc.DiscoveryCfg.Auth.Username),
+
 		zap.String("downgrade-check-interval", sc.DowngradeCheckTime.String()),
 		zap.Int("max-learners", sc.ExperimentalMaxLearners),
 	)
@@ -362,8 +388,8 @@ func (e *Etcd) Close() {
 	fields := []zap.Field{
 		zap.String("name", e.cfg.Name),
 		zap.String("data-dir", e.cfg.Dir),
-		zap.Strings("advertise-peer-urls", e.cfg.getAPURLs()),
-		zap.Strings("advertise-client-urls", e.cfg.getACURLs()),
+		zap.Strings("advertise-peer-urls", e.cfg.getAdvertisePeerUrls()),
+		zap.Strings("advertise-client-urls", e.cfg.getAdvertiseClientUrls()),
 	}
 	lg := e.GetLogger()
 	lg.Info("closing etcd server", fields...)
@@ -433,11 +459,16 @@ func (e *Etcd) Close() {
 
 func stopServers(ctx context.Context, ss *servers) {
 	// first, close the http.Server
-	ss.http.Shutdown(ctx)
-	// do not grpc.Server.GracefulStop with TLS enabled etcd server
+	if ss.http != nil {
+		ss.http.Shutdown(ctx)
+	}
+	if ss.grpc == nil {
+		return
+	}
+	// do not grpc.Server.GracefulStop when grpc runs under http server
 	// See https://github.com/grpc/grpc-go/issues/1384#issuecomment-317124531
 	// and https://github.com/etcd-io/etcd/issues/8916
-	if ss.secure {
+	if ss.secure && ss.http != nil {
 		ss.grpc.Stop()
 		return
 	}
@@ -476,6 +507,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 	if err = cfg.PeerSelfCert(); err != nil {
 		cfg.logger.Fatal("failed to get peer self-signed certs", zap.Error(err))
 	}
+	updateMinMaxVersions(&cfg.PeerTLSInfo, cfg.TlsMinVersion, cfg.TlsMaxVersion)
 	if !cfg.PeerTLSInfo.Empty() {
 		cfg.logger.Info(
 			"starting with peer TLS",
@@ -484,7 +516,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 		)
 	}
 
-	peers = make([]*peerListener, len(cfg.LPUrls))
+	peers = make([]*peerListener, len(cfg.ListenPeerUrls))
 	defer func() {
 		if err == nil {
 			return
@@ -493,7 +525,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 			if peers[i] != nil && peers[i].close != nil {
 				cfg.logger.Warn(
 					"closing peer listener",
-					zap.String("address", cfg.LPUrls[i].String()),
+					zap.String("address", cfg.ListenPeerUrls[i].String()),
 					zap.Error(err),
 				)
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -503,7 +535,7 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 		}
 	}()
 
-	for i, u := range cfg.LPUrls {
+	for i, u := range cfg.ListenPeerUrls {
 		if u.Scheme == "http" {
 			if !cfg.PeerTLSInfo.Empty() {
 				cfg.logger.Warn("scheme is HTTP while key and cert files are present; ignoring key and cert files", zap.String("peer-url", u.String()))
@@ -532,20 +564,12 @@ func configurePeerListeners(cfg *Config) (peers []*peerListener, err error) {
 // configure peer handlers after rafthttp.Transport started
 func (e *Etcd) servePeers() (err error) {
 	ph := etcdhttp.NewPeerHandler(e.GetLogger(), e.Server)
-	var peerTLScfg *tls.Config
-	if !e.cfg.PeerTLSInfo.Empty() {
-		if peerTLScfg, err = e.cfg.PeerTLSInfo.ServerConfig(); err != nil {
-			return err
-		}
-	}
 
 	for _, p := range e.Peers {
 		u := p.Listener.Addr().String()
-		gs := v3rpc.Server(e.Server, peerTLScfg, nil)
 		m := cmux.New(p.Listener)
-		go gs.Serve(m.Match(cmux.HTTP2()))
 		srv := &http.Server{
-			Handler:     grpcHandlerFunc(gs, ph),
+			Handler:     ph,
 			ReadTimeout: 5 * time.Minute,
 			ErrorLog:    defaultLog.New(io.Discard, "", 0), // do not log user error
 		}
@@ -565,7 +589,7 @@ func (e *Etcd) servePeers() (err error) {
 				"stopping serving peer traffic",
 				zap.String("address", u),
 			)
-			stopServers(ctx, &servers{secure: peerTLScfg != nil, grpc: gs, http: srv})
+			srv.Shutdown(ctx)
 			e.cfg.logger.Info(
 				"stopped serving peer traffic",
 				zap.String("address", u),
@@ -596,13 +620,13 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 	if err = cfg.ClientSelfCert(); err != nil {
 		cfg.logger.Fatal("failed to get client self-signed certs", zap.Error(err))
 	}
+	updateMinMaxVersions(&cfg.ClientTLSInfo, cfg.TlsMinVersion, cfg.TlsMaxVersion)
 	if cfg.EnablePprof {
 		cfg.logger.Info("pprof is enabled", zap.String("path", debugutil.HTTPPrefixPProf))
 	}
 
 	sctxs = make(map[string]*serveCtx)
-	for _, u := range cfg.LCUrls {
-		sctx := newServeCtx(cfg.logger)
+	for _, u := range append(cfg.ListenClientUrls, cfg.ListenClientHttpUrls...) {
 		if u.Scheme == "http" || u.Scheme == "unix" {
 			if !cfg.ClientTLSInfo.Empty() {
 				cfg.logger.Warn("scheme is HTTP while key and cert files are present; ignoring key and cert files", zap.String("client-url", u.String()))
@@ -614,24 +638,41 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 		if (u.Scheme == "https" || u.Scheme == "unixs") && cfg.ClientTLSInfo.Empty() {
 			return nil, fmt.Errorf("TLS key/cert (--cert-file, --key-file) must be provided for client url %s with HTTPS scheme", u.String())
 		}
+	}
 
-		network := "tcp"
-		addr := u.Host
-		if u.Scheme == "unix" || u.Scheme == "unixs" {
-			network = "unix"
-			addr = u.Host + u.Path
+	for _, u := range cfg.ListenClientUrls {
+		addr, secure, network := resolveUrl(u)
+		sctx := sctxs[addr]
+		if sctx == nil {
+			sctx = newServeCtx(cfg.logger)
+			sctxs[addr] = sctx
 		}
+		sctx.secure = sctx.secure || secure
+		sctx.insecure = sctx.insecure || !secure
+		sctx.scheme = u.Scheme
+		sctx.addr = addr
 		sctx.network = network
+	}
+	for _, u := range cfg.ListenClientHttpUrls {
+		addr, secure, network := resolveUrl(u)
 
-		sctx.secure = u.Scheme == "https" || u.Scheme == "unixs"
-		sctx.insecure = !sctx.secure
-		if oldctx := sctxs[addr]; oldctx != nil {
-			oldctx.secure = oldctx.secure || sctx.secure
-			oldctx.insecure = oldctx.insecure || sctx.insecure
-			continue
+		sctx := sctxs[addr]
+		if sctx == nil {
+			sctx = newServeCtx(cfg.logger)
+			sctxs[addr] = sctx
+		} else if !sctx.httpOnly {
+			return nil, fmt.Errorf("cannot bind both --client-listen-urls and --client-listen-http-urls on the same url %s", u.String())
 		}
+		sctx.secure = sctx.secure || secure
+		sctx.insecure = sctx.insecure || !secure
+		sctx.scheme = u.Scheme
+		sctx.addr = addr
+		sctx.network = network
+		sctx.httpOnly = true
+	}
 
-		if sctx.l, err = transport.NewListenerWithOpts(addr, u.Scheme,
+	for _, sctx := range sctxs {
+		if sctx.l, err = transport.NewListenerWithOpts(sctx.addr, sctx.scheme,
 			transport.WithSocketOpts(&cfg.SocketOpts),
 			transport.WithSkipTLSInfoCheck(true),
 		); err != nil {
@@ -639,7 +680,6 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 		}
 		// net.Listener will rewrite ipv4 0.0.0.0 to ipv6 [::], breaking
 		// hosts that disable ipv6. So, use the address given by the user.
-		sctx.addr = addr
 
 		if fdLimit, fderr := runtimeutil.FDLimit(); fderr == nil {
 			if fdLimit <= reservedInternalFDNum {
@@ -652,23 +692,17 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 			sctx.l = transport.LimitListener(sctx.l, int(fdLimit-reservedInternalFDNum))
 		}
 
-		if network == "tcp" {
-			if sctx.l, err = transport.NewKeepAliveListener(sctx.l, network, nil); err != nil {
-				return nil, err
-			}
-		}
-
-		defer func(u url.URL) {
-			if err == nil {
+		defer func(sctx *serveCtx) {
+			if err == nil || sctx.l == nil {
 				return
 			}
 			sctx.l.Close()
 			cfg.logger.Warn(
 				"closing peer listener",
-				zap.String("address", u.Host),
+				zap.String("address", sctx.addr),
 				zap.Error(err),
 			)
-		}(u)
+		}(sctx)
 		for k := range cfg.UserHandlers {
 			sctx.userHandlers[k] = cfg.UserHandlers[k]
 		}
@@ -679,9 +713,19 @@ func configureClientListeners(cfg *Config) (sctxs map[string]*serveCtx, err erro
 		if cfg.LogLevel == "debug" {
 			sctx.registerTrace()
 		}
-		sctxs[addr] = sctx
 	}
 	return sctxs, nil
+}
+
+func resolveUrl(u url.URL) (addr string, secure bool, network string) {
+	addr = u.Host
+	network = "tcp"
+	if u.Scheme == "unix" || u.Scheme == "unixs" {
+		addr = u.Host + u.Path
+		network = "unix"
+	}
+	secure = u.Scheme == "https" || u.Scheme == "unixs"
+	return addr, secure, network
 }
 
 func (e *Etcd) serveClients() (err error) {
@@ -694,27 +738,13 @@ func (e *Etcd) serveClients() (err error) {
 	}
 
 	// Start a client server goroutine for each listen address
-	var h http.Handler
-	if e.Config().EnableV2 {
-		if e.Config().V2DeprecationEffective().IsAtLeast(config.V2_DEPR_1_WRITE_ONLY) {
-			return fmt.Errorf("--enable-v2 and --v2-deprecation=%s are mutually exclusive", e.Config().V2DeprecationEffective())
-		}
-		e.cfg.logger.Warn("Flag `enable-v2` is deprecated and will get removed in etcd 3.6.")
-		if len(e.Config().ExperimentalEnableV2V3) > 0 {
-			e.cfg.logger.Warn("Flag `experimental-enable-v2v3` is deprecated and will get removed in etcd 3.6.")
-			srv := v2v3.NewServer(e.cfg.logger, v3client.New(e.Server), e.cfg.ExperimentalEnableV2V3)
-			h = v2http.NewClientHandler(e.GetLogger(), srv, e.Server.Cfg.ReqTimeout())
-		} else {
-			h = v2http.NewClientHandler(e.GetLogger(), e.Server, e.Server.Cfg.ReqTimeout())
-		}
-	} else {
-		mux := http.NewServeMux()
-		etcdhttp.HandleBasic(e.cfg.logger, mux, e.Server)
-		etcdhttp.HandleMetricsHealthForV3(e.cfg.logger, mux, e.Server)
-		h = mux
-	}
+	mux := http.NewServeMux()
+	etcdhttp.HandleDebug(mux)
+	etcdhttp.HandleVersion(mux, e.Server)
+	etcdhttp.HandleMetrics(mux)
+	etcdhttp.HandleHealth(e.cfg.logger, mux, e.Server)
 
-	gopts := []grpc.ServerOption{}
+	var gopts []grpc.ServerOption
 	if e.cfg.GRPCKeepAliveMinTime > time.Duration(0) {
 		gopts = append(gopts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             e.cfg.GRPCKeepAliveMinTime,
@@ -729,13 +759,66 @@ func (e *Etcd) serveClients() (err error) {
 		}))
 	}
 
+	splitHttp := false
+	for _, sctx := range e.sctxs {
+		if sctx.httpOnly {
+			splitHttp = true
+		}
+	}
+
 	// start client servers in each goroutine
 	for _, sctx := range e.sctxs {
 		go func(s *serveCtx) {
-			e.errHandler(s.serve(e.Server, &e.cfg.ClientTLSInfo, h, e.errHandler, gopts...))
+			e.errHandler(s.serve(e.Server, &e.cfg.ClientTLSInfo, mux, e.errHandler, e.grpcGatewayDial(splitHttp), splitHttp, gopts...))
 		}(sctx)
 	}
 	return nil
+}
+
+func (e *Etcd) grpcGatewayDial(splitHttp bool) (grpcDial func(ctx context.Context) (*grpc.ClientConn, error)) {
+	if !e.cfg.EnableGRPCGateway {
+		return nil
+	}
+	sctx := e.pickGrpcGatewayServeContext(splitHttp)
+	addr := sctx.addr
+	if network := sctx.network; network == "unix" {
+		// explicitly define unix network for gRPC socket support
+		addr = fmt.Sprintf("%s:%s", network, addr)
+	}
+	opts := []grpc.DialOption{grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32))}
+	if sctx.secure {
+		tlscfg, tlsErr := e.cfg.ClientTLSInfo.ServerConfig()
+		if tlsErr != nil {
+			return func(ctx context.Context) (*grpc.ClientConn, error) {
+				return nil, tlsErr
+			}
+		}
+		dtls := tlscfg.Clone()
+		// trust local server
+		dtls.InsecureSkipVerify = true
+		bundle := credentials.NewBundle(credentials.Config{TLSConfig: dtls})
+		opts = append(opts, grpc.WithTransportCredentials(bundle.TransportCredentials()))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	return func(ctx context.Context) (*grpc.ClientConn, error) {
+		conn, err := grpc.DialContext(ctx, addr, opts...)
+		if err != nil {
+			sctx.lg.Error("grpc gateway failed to dial", zap.String("addr", addr), zap.Error(err))
+			return nil, err
+		}
+		return conn, err
+	}
+}
+
+func (e *Etcd) pickGrpcGatewayServeContext(splitHttp bool) *serveCtx {
+	for _, sctx := range e.sctxs {
+		if !splitHttp || !sctx.httpOnly {
+			return sctx
+		}
+	}
+	panic("Expect at least one context able to serve grpc")
 }
 
 func (e *Etcd) serveMetrics() (err error) {
@@ -745,7 +828,8 @@ func (e *Etcd) serveMetrics() (err error) {
 
 	if len(e.cfg.ListenMetricsUrls) > 0 {
 		metricsMux := http.NewServeMux()
-		etcdhttp.HandleMetricsHealthForV3(e.cfg.logger, metricsMux, e.Server)
+		etcdhttp.HandleMetrics(metricsMux)
+		etcdhttp.HandleHealth(e.cfg.logger, metricsMux, e.Server)
 
 		for _, murl := range e.cfg.ListenMetricsUrls {
 			tlsInfo := &e.cfg.ClientTLSInfo
@@ -773,6 +857,9 @@ func (e *Etcd) serveMetrics() (err error) {
 }
 
 func (e *Etcd) errHandler(err error) {
+	if err != nil {
+		e.GetLogger().Error("setting up serving from embedded etcd failed.", zap.Error(err))
+	}
 	select {
 	case <-e.stopc:
 		return

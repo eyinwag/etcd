@@ -31,8 +31,7 @@ type StoreCloser interface {
 }
 
 func TestNewStoreWithNamespaces(t *testing.T) {
-	s := newTestStore(t, "/0", "/1")
-	defer s.Close()
+	s := v2store.New("/0", "/1")
 
 	_, err := s.Get("/0", false, false)
 	testutil.AssertNil(t, err)
@@ -40,10 +39,9 @@ func TestNewStoreWithNamespaces(t *testing.T) {
 	testutil.AssertNil(t, err)
 }
 
-// Ensure that the store can retrieve an existing value.
+// TestStoreGetValue ensures that the store can retrieve an existing value.
 func TestStoreGetValue(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	var eidx uint64 = 1
@@ -55,10 +53,9 @@ func TestStoreGetValue(t *testing.T) {
 	assert.Equal(t, *e.Node.Value, "bar")
 }
 
-// Ensure that the store can retrieve a directory in sorted order.
+// TestStoreGetSorted ensures that the store can retrieve a directory in sorted order.
 func TestStoreGetSorted(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	s.Create("/foo/x", false, "0", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -93,8 +90,7 @@ func TestStoreGetSorted(t *testing.T) {
 }
 
 func TestSet(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	// Set /foo=""
 	var eidx uint64 = 1
@@ -175,10 +171,9 @@ func TestSet(t *testing.T) {
 	assert.Equal(t, e.Node.ModifiedIndex, uint64(5))
 }
 
-// Ensure that the store can create a new key if it doesn't already exist.
+// TestStoreCreateValue ensures that the store can create a new key if it doesn't already exist.
 func TestStoreCreateValue(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	// Create /foo=bar
 	var eidx uint64 = 1
@@ -210,10 +205,9 @@ func TestStoreCreateValue(t *testing.T) {
 
 }
 
-// Ensure that the store can create a new directory if it doesn't already exist.
+// TestStoreCreateDirectory ensures that the store can create a new directory if it doesn't already exist.
 func TestStoreCreateDirectory(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 1
 	e, err := s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -224,10 +218,9 @@ func TestStoreCreateDirectory(t *testing.T) {
 	testutil.AssertTrue(t, e.Node.Dir)
 }
 
-// Ensure that the store fails to create a key if it already exists.
+// TestStoreCreateFailsIfExists ensure that the store fails to create a key if it already exists.
 func TestStoreCreateFailsIfExists(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	// create /foo as dir
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -242,10 +235,9 @@ func TestStoreCreateFailsIfExists(t *testing.T) {
 	testutil.AssertNil(t, e)
 }
 
-// Ensure that the store can update a key if it already exists.
+// TestStoreUpdateValue ensures that the store can update a key if it already exists.
 func TestStoreUpdateValue(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	// create /foo=bar
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -292,10 +284,9 @@ func TestStoreUpdateValue(t *testing.T) {
 	assert.Equal(t, *e.Node.Value, "")
 }
 
-// Ensure that the store cannot update a directory.
+// TestStoreUpdateFailsIfDirectory ensures that the store cannot update a directory.
 func TestStoreUpdateFailsIfDirectory(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.Update("/foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -306,10 +297,9 @@ func TestStoreUpdateFailsIfDirectory(t *testing.T) {
 	testutil.AssertNil(t, e)
 }
 
-// Ensure that the store can delete a value.
+// TestStoreDeleteValue ensures that the store can delete a value.
 func TestStoreDeleteValue(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -323,10 +313,9 @@ func TestStoreDeleteValue(t *testing.T) {
 	assert.Equal(t, *e.PrevNode.Value, "bar")
 }
 
-// Ensure that the store can delete a directory if recursive is specified.
+// TestStoreDeleteDirectory ensures that the store can delete a directory if recursive is specified.
 func TestStoreDeleteDirectory(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	// create directory /foo
 	var eidx uint64 = 2
@@ -360,11 +349,10 @@ func TestStoreDeleteDirectory(t *testing.T) {
 
 }
 
-// Ensure that the store cannot delete a directory if both of recursive
-// and dir are not specified.
+// TestStoreDeleteDirectoryFailsIfNonRecursiveAndDir ensures that the
+// store cannot delete a directory if both of recursive and dir are not specified.
 func TestStoreDeleteDirectoryFailsIfNonRecursiveAndDir(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.Delete("/foo", false, false)
@@ -375,8 +363,7 @@ func TestStoreDeleteDirectoryFailsIfNonRecursiveAndDir(t *testing.T) {
 }
 
 func TestRootRdOnly(t *testing.T) {
-	s := newTestStore(t, "/0")
-	defer s.Close()
+	s := v2store.New("/0")
 
 	for _, tt := range []string{"/", "/0"} {
 		_, err := s.Set(tt, true, "", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -397,8 +384,7 @@ func TestRootRdOnly(t *testing.T) {
 }
 
 func TestStoreCompareAndDeletePrevValue(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -417,8 +403,7 @@ func TestStoreCompareAndDeletePrevValue(t *testing.T) {
 }
 
 func TestStoreCompareAndDeletePrevValueFailsIfNotMatch(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -433,8 +418,7 @@ func TestStoreCompareAndDeletePrevValueFailsIfNotMatch(t *testing.T) {
 }
 
 func TestStoreCompareAndDeletePrevIndex(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -451,8 +435,7 @@ func TestStoreCompareAndDeletePrevIndex(t *testing.T) {
 }
 
 func TestStoreCompareAndDeletePrevIndexFailsIfNotMatch(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -467,10 +450,9 @@ func TestStoreCompareAndDeletePrevIndexFailsIfNotMatch(t *testing.T) {
 	assert.Equal(t, *e.Node.Value, "bar")
 }
 
-// Ensure that the store cannot delete a directory.
+// TestStoreCompareAndDeleteDirectoryFail ensures that the store cannot delete a directory.
 func TestStoreCompareAndDeleteDirectoryFail(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	s.Create("/foo", true, "", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	_, _err := s.CompareAndDelete("/foo", "", 0)
@@ -479,10 +461,10 @@ func TestStoreCompareAndDeleteDirectoryFail(t *testing.T) {
 	assert.Equal(t, err.ErrorCode, v2error.EcodeNotFile)
 }
 
-// Ensure that the store can conditionally update a key if it has a previous value.
+// TestStoreCompareAndSwapPrevValue ensures that the store can conditionally
+// update a key if it has a previous value.
 func TestStoreCompareAndSwapPrevValue(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -502,10 +484,10 @@ func TestStoreCompareAndSwapPrevValue(t *testing.T) {
 	assert.Equal(t, *e.Node.Value, "baz")
 }
 
-// Ensure that the store cannot conditionally update a key if it has the wrong previous value.
+// TestStoreCompareAndSwapPrevValueFailsIfNotMatch ensure that the store cannot
+// conditionally update a key if it has the wrong previous value.
 func TestStoreCompareAndSwapPrevValueFailsIfNotMatch(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.CompareAndSwap("/foo", "wrong_value", 0, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -518,10 +500,10 @@ func TestStoreCompareAndSwapPrevValueFailsIfNotMatch(t *testing.T) {
 	assert.Equal(t, e.EtcdIndex, eidx)
 }
 
-// Ensure that the store can conditionally update a key if it has a previous index.
+// TestStoreCompareAndSwapPrevIndex ensures that the store can conditionally
+// update a key if it has a previous index.
 func TestStoreCompareAndSwapPrevIndex(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 2
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, err := s.CompareAndSwap("/foo", "", 1, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -541,10 +523,10 @@ func TestStoreCompareAndSwapPrevIndex(t *testing.T) {
 	assert.Equal(t, e.EtcdIndex, eidx)
 }
 
-// Ensure that the store cannot conditionally update a key if it has the wrong previous index.
+// TestStoreCompareAndSwapPrevIndexFailsIfNotMatch ensures that the store cannot
+// conditionally update a key if it has the wrong previous index.
 func TestStoreCompareAndSwapPrevIndexFailsIfNotMatch(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e, _err := s.CompareAndSwap("/foo", "", 100, "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -557,10 +539,9 @@ func TestStoreCompareAndSwapPrevIndexFailsIfNotMatch(t *testing.T) {
 	assert.Equal(t, *e.Node.Value, "bar")
 }
 
-// Ensure that the store can watch for key creation.
+// TestStoreWatchCreate ensures that the store can watch for key creation.
 func TestStoreWatchCreate(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 0
 	w, _ := s.Watch("/foo", false, false, 0)
 	c := w.EventChan()
@@ -578,10 +559,10 @@ func TestStoreWatchCreate(t *testing.T) {
 	}
 }
 
-// Ensure that the store can watch for recursive key creation.
+// TestStoreWatchRecursiveCreate ensures that the store
+// can watch for recursive key creation.
 func TestStoreWatchRecursiveCreate(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 0
 	w, err := s.Watch("/foo", true, false, 0)
 	testutil.AssertNil(t, err)
@@ -594,10 +575,9 @@ func TestStoreWatchRecursiveCreate(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo/bar")
 }
 
-// Ensure that the store can watch for key updates.
+// TestStoreWatchUpdate ensures that the store can watch for key updates.
 func TestStoreWatchUpdate(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", false, false, 0)
@@ -610,10 +590,9 @@ func TestStoreWatchUpdate(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo")
 }
 
-// Ensure that the store can watch for recursive key updates.
+// TestStoreWatchRecursiveUpdate ensures that the store can watch for recursive key updates.
 func TestStoreWatchRecursiveUpdate(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, err := s.Watch("/foo", true, false, 0)
@@ -627,10 +606,9 @@ func TestStoreWatchRecursiveUpdate(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo/bar")
 }
 
-// Ensure that the store can watch for key deletions.
+// TestStoreWatchDelete ensures that the store can watch for key deletions.
 func TestStoreWatchDelete(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", false, false, 0)
@@ -643,10 +621,9 @@ func TestStoreWatchDelete(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo")
 }
 
-// Ensure that the store can watch for recursive key deletions.
+// TestStoreWatchRecursiveDelete ensures that the store can watch for recursive key deletions.
 func TestStoreWatchRecursiveDelete(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, err := s.Watch("/foo", true, false, 0)
@@ -660,10 +637,9 @@ func TestStoreWatchRecursiveDelete(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo/bar")
 }
 
-// Ensure that the store can watch for CAS updates.
+// TestStoreWatchCompareAndSwap ensures that the store can watch for CAS updates.
 func TestStoreWatchCompareAndSwap(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", false, false, 0)
@@ -676,10 +652,10 @@ func TestStoreWatchCompareAndSwap(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo")
 }
 
-// Ensure that the store can watch for recursive CAS updates.
+// TestStoreWatchRecursiveCompareAndSwap ensures that the
+// store can watch for recursive CAS updates.
 func TestStoreWatchRecursiveCompareAndSwap(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	s.Create("/foo/bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", true, false, 0)
@@ -692,10 +668,9 @@ func TestStoreWatchRecursiveCompareAndSwap(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/foo/bar")
 }
 
-// Ensure that the store can watch in streaming mode.
+// TestStoreWatchStream ensures that the store can watch in streaming mode.
 func TestStoreWatchStream(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	w, _ := s.Watch("/foo", false, true, 0)
 	// first modification
@@ -725,10 +700,10 @@ func TestStoreWatchStream(t *testing.T) {
 	}
 }
 
-// Ensure that the store can watch for hidden keys as long as it's an exact path match.
+// TestStoreWatchCreateWithHiddenKey ensure that the store can
+// watch for hidden keys as long as it's an exact path match.
 func TestStoreWatchCreateWithHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	w, _ := s.Watch("/_foo", false, false, 0)
 	s.Create("/_foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -743,10 +718,10 @@ func TestStoreWatchCreateWithHiddenKey(t *testing.T) {
 	}
 }
 
-// Ensure that the store doesn't see hidden key creates without an exact path match in recursive mode.
+// TestStoreWatchRecursiveCreateWithHiddenKey ensures that the store doesn't
+// see hidden key creates without an exact path match in recursive mode.
 func TestStoreWatchRecursiveCreateWithHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	w, _ := s.Watch("/foo", true, false, 0)
 	s.Create("/foo/_bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	e := nbselect(w.EventChan())
@@ -766,10 +741,10 @@ func TestStoreWatchRecursiveCreateWithHiddenKey(t *testing.T) {
 	}
 }
 
-// Ensure that the store doesn't see hidden key updates.
+// TestStoreWatchUpdateWithHiddenKey ensures that the store
+// doesn't see hidden key updates.
 func TestStoreWatchUpdateWithHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	s.Create("/_foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/_foo", false, false, 0)
 	s.Update("/_foo", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -780,10 +755,10 @@ func TestStoreWatchUpdateWithHiddenKey(t *testing.T) {
 	testutil.AssertNil(t, e)
 }
 
-// Ensure that the store doesn't see hidden key updates without an exact path match in recursive mode.
+// TestStoreWatchRecursiveUpdateWithHiddenKey ensures that the store doesn't
+// see hidden key updates without an exact path match in recursive mode.
 func TestStoreWatchRecursiveUpdateWithHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	s.Create("/foo/_bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", true, false, 0)
 	s.Update("/foo/_bar", "baz", v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -791,10 +766,9 @@ func TestStoreWatchRecursiveUpdateWithHiddenKey(t *testing.T) {
 	testutil.AssertNil(t, e)
 }
 
-// Ensure that the store can watch for key deletions.
+// TestStoreWatchDeleteWithHiddenKey ensures that the store can watch for key deletions.
 func TestStoreWatchDeleteWithHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 2
 	s.Create("/_foo", false, "bar", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/_foo", false, false, 0)
@@ -807,10 +781,10 @@ func TestStoreWatchDeleteWithHiddenKey(t *testing.T) {
 	testutil.AssertNil(t, e)
 }
 
-// Ensure that the store doesn't see hidden key deletes without an exact path match in recursive mode.
+// TestStoreWatchRecursiveDeleteWithHiddenKey ensures that the store doesn't see
+// hidden key deletes without an exact path match in recursive mode.
 func TestStoreWatchRecursiveDeleteWithHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	s.Create("/foo/_bar", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
 	w, _ := s.Watch("/foo", true, false, 0)
 	s.Delete("/foo/_bar", false, false)
@@ -818,10 +792,10 @@ func TestStoreWatchRecursiveDeleteWithHiddenKey(t *testing.T) {
 	testutil.AssertNil(t, e)
 }
 
-// Ensure that the store does see hidden key creates if watching deeper than a hidden key in recursive mode.
+// TestStoreWatchRecursiveCreateDeeperThanHiddenKey ensures that the store does see
+// hidden key creates if watching deeper than a hidden key in recursive mode.
 func TestStoreWatchRecursiveCreateDeeperThanHiddenKey(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	var eidx uint64 = 1
 	w, _ := s.Watch("/_foo/bar", true, false, 0)
 	s.Create("/_foo/bar/baz", false, "baz", false, v2store.TTLOptionSet{ExpireTime: v2store.Permanent})
@@ -833,7 +807,7 @@ func TestStoreWatchRecursiveCreateDeeperThanHiddenKey(t *testing.T) {
 	assert.Equal(t, e.Node.Key, "/_foo/bar/baz")
 }
 
-// Ensure that slow consumers are handled properly.
+// TestStoreWatchSlowConsumer ensures that slow consumers are handled properly.
 //
 // Since Watcher.EventChan() has a buffer of size 100 we can only queue 100
 // event per watcher. If the consumer cannot consume the event on time and
@@ -841,8 +815,7 @@ func TestStoreWatchRecursiveCreateDeeperThanHiddenKey(t *testing.T) {
 // This test ensures that after closing the channel, the store can continue
 // to operate correctly.
 func TestStoreWatchSlowConsumer(t *testing.T) {
-	s := newTestStore(t)
-	defer s.Close()
+	s := v2store.New()
 	s.Watch("/foo", true, true, 0) // stream must be true
 	// Fill watch channel with 100 events
 	for i := 1; i <= 100; i++ {

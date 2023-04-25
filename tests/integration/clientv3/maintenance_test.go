@@ -17,29 +17,33 @@ package clientv3test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
-	"go.uber.org/zap/zaptest"
-	"google.golang.org/grpc"
-
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/api/v3/version"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
+	"go.etcd.io/etcd/server/v3/storage/mvcc/testutil"
+	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
+
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
+	"google.golang.org/grpc"
 )
 
 func TestMaintenanceHashKV(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	for i := 0; i < 3; i++ {
@@ -69,10 +73,58 @@ func TestMaintenanceHashKV(t *testing.T) {
 	}
 }
 
+// TestCompactionHash tests compaction hash
+// TODO: Change this to fuzz test
+func TestCompactionHash(t *testing.T) {
+	integration2.BeforeTest(t)
+
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	cc, err := clus.ClusterClient(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testutil.TestCompactionHash(context.Background(), t, hashTestCase{cc, clus.Members[0].GRPCURL()}, 1000)
+}
+
+type hashTestCase struct {
+	*clientv3.Client
+	url string
+}
+
+func (tc hashTestCase) Put(ctx context.Context, key, value string) error {
+	_, err := tc.Client.Put(ctx, key, value)
+	return err
+}
+
+func (tc hashTestCase) Delete(ctx context.Context, key string) error {
+	_, err := tc.Client.Delete(ctx, key)
+	return err
+}
+
+func (tc hashTestCase) HashByRev(ctx context.Context, rev int64) (testutil.KeyValueHash, error) {
+	resp, err := tc.Client.HashKV(ctx, tc.url, rev)
+	return testutil.KeyValueHash{Hash: resp.Hash, CompactRevision: resp.CompactRevision, Revision: resp.Header.Revision}, err
+}
+
+func (tc hashTestCase) Defrag(ctx context.Context) error {
+	_, err := tc.Client.Defragment(ctx, tc.url)
+	return err
+}
+
+func (tc hashTestCase) Compact(ctx context.Context, rev int64) error {
+	_, err := tc.Client.Compact(ctx, rev)
+	// Wait for compaction to be compacted
+	time.Sleep(50 * time.Millisecond)
+	return err
+}
+
 func TestMaintenanceMoveLeader(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	oldLeadIdx := clus.WaitLeader(t)
@@ -103,11 +155,21 @@ func TestMaintenanceMoveLeader(t *testing.T) {
 func TestMaintenanceSnapshotCancel(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	// reading snapshot with canceled context should error out
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Since http2 spec defines the receive windows's size and max size of
+	// frame in the stream, the underlayer - gRPC client can pre-read data
+	// from server even if the application layer hasn't read it yet.
+	//
+	// And the initialized cluster has 20KiB snapshot, which can be
+	// pre-read by underlayer. We should increase the snapshot's size here,
+	// just in case that io.Copy won't return the canceled error.
+	populateDataIntoCluster(t, clus, 3, 1024*1024)
+
 	rc1, err := clus.RandClient().Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -146,12 +208,22 @@ func TestMaintenanceSnapshotTimeout(t *testing.T) {
 func testMaintenanceSnapshotTimeout(t *testing.T, snapshot func(context.Context, *clientv3.Client) (io.ReadCloser, error)) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	// reading snapshot with deadline exceeded should error out
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+
+	// Since http2 spec defines the receive windows's size and max size of
+	// frame in the stream, the underlayer - gRPC client can pre-read data
+	// from server even if the application layer hasn't read it yet.
+	//
+	// And the initialized cluster has 20KiB snapshot, which can be
+	// pre-read by underlayer. We should increase the snapshot's size here,
+	// just in case that io.Copy won't return the timeout error.
+	populateDataIntoCluster(t, clus, 3, 1024*1024)
+
 	rc2, err := snapshot(ctx, clus.RandClient())
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +250,7 @@ func TestMaintenanceSnapshotWithVersionErrorInflight(t *testing.T) {
 	})
 }
 
-// TestMaintenanceSnapshotError ensures that ReaderCloser returned by Snapshot function
+// TestMaintenanceSnapshotErrorInflight ensures that ReaderCloser returned by Snapshot function
 // will fail to read with corresponding context errors on inflight context cancel timeout.
 func TestMaintenanceSnapshotErrorInflight(t *testing.T) {
 	testMaintenanceSnapshotErrorInflight(t, func(ctx context.Context, client *clientv3.Client) (io.ReadCloser, error) {
@@ -190,15 +262,16 @@ func TestMaintenanceSnapshotErrorInflight(t *testing.T) {
 // will fail to read with corresponding context errors on inflight context cancel timeout.
 func testMaintenanceSnapshotErrorInflight(t *testing.T, snapshot func(context.Context, *clientv3.Client) (io.ReadCloser, error)) {
 	integration2.BeforeTest(t)
+	lg := zaptest.NewLogger(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
 	defer clus.Terminate(t)
 
 	// take about 1-second to read snapshot
 	clus.Members[0].Stop(t)
 	dpath := filepath.Join(clus.Members[0].DataDir, "member", "snap", "db")
-	b := backend.NewDefaultBackend(dpath)
-	s := mvcc.NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, mvcc.StoreConfig{CompactionBatchLimit: math.MaxInt32})
+	b := backend.NewDefaultBackend(lg, dpath)
+	s := mvcc.NewStore(lg, b, &lease.FakeLessor{}, mvcc.StoreConfig{CompactionBatchLimit: math.MaxInt32})
 	rev := 100000
 	for i := 2; i <= rev; i++ {
 		s.Put([]byte(fmt.Sprintf("%10d", i)), bytes.Repeat([]byte("a"), 1024), lease.NoLease)
@@ -249,7 +322,7 @@ func TestMaintenanceSnapshotWithVersionVersion(t *testing.T) {
 	integration2.BeforeTest(t)
 
 	// Set SnapshotCount to 1 to force raft snapshot to ensure that storage version is set
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1, SnapshotCount: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, SnapshotCount: 1})
 	defer clus.Terminate(t)
 
 	// Put some keys to ensure that wal snapshot is triggered
@@ -268,24 +341,74 @@ func TestMaintenanceSnapshotWithVersionVersion(t *testing.T) {
 	}
 }
 
+func TestMaintenanceSnapshotContentDigest(t *testing.T) {
+	integration2.BeforeTest(t)
+
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
+	defer clus.Terminate(t)
+
+	populateDataIntoCluster(t, clus, 3, 1024*1024)
+
+	// reading snapshot with canceled context should error out
+	resp, err := clus.RandClient().SnapshotWithVersion(context.Background())
+	require.NoError(t, err)
+	defer resp.Snapshot.Close()
+
+	tmpDir := t.TempDir()
+	snapFile, err := os.Create(filepath.Join(tmpDir, t.Name()))
+	require.NoError(t, err)
+	defer snapFile.Close()
+
+	snapSize, err := io.Copy(snapFile, resp.Snapshot)
+	require.NoError(t, err)
+
+	// read the checksum
+	checksumSize := int64(sha256.Size)
+	_, err = snapFile.Seek(-checksumSize, io.SeekEnd)
+	require.NoError(t, err)
+
+	checksumInBytes, err := io.ReadAll(snapFile)
+	require.NoError(t, err)
+	require.Equal(t, int(checksumSize), len(checksumInBytes))
+
+	// remove the checksum part and rehash
+	err = snapFile.Truncate(snapSize - checksumSize)
+	require.NoError(t, err)
+
+	_, err = snapFile.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	hashWriter := sha256.New()
+	_, err = io.Copy(hashWriter, snapFile)
+	require.NoError(t, err)
+
+	// compare the checksum
+	actualChecksum := hashWriter.Sum(nil)
+	require.Equal(t, checksumInBytes, actualChecksum)
+}
+
 func TestMaintenanceStatus(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
+	t.Logf("Waiting for leader...")
 	clus.WaitLeader(t)
+	t.Logf("Leader established.")
 
 	eps := make([]string, 3)
 	for i := 0; i < 3; i++ {
 		eps[i] = clus.Members[i].GRPCURL()
 	}
 
+	t.Logf("Creating client...")
 	cli, err := integration2.NewClient(t, clientv3.Config{Endpoints: eps, DialOptions: []grpc.DialOption{grpc.WithBlock()}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cli.Close()
+	t.Logf("Creating client [DONE]")
 
 	prevID, leaderFound := uint64(0), false
 	for i := 0; i < 3; i++ {
@@ -293,6 +416,7 @@ func TestMaintenanceStatus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Logf("Response from %v: %v", i, resp)
 		if prevID == 0 {
 			prevID, leaderFound = resp.Header.MemberId, resp.Header.MemberId == resp.Leader
 			continue

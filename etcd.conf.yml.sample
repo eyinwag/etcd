@@ -69,9 +69,6 @@ initial-cluster-state: 'new'
 # Reject reconfiguration requests that would cause quorum loss.
 strict-reconfig-check: false
 
-# Accept etcd V2 client requests
-enable-v2: true
-
 # Enable runtime profiling data via HTTP server
 enable-pprof: true
 
@@ -141,3 +138,9 @@ force-new-cluster: false
 
 auto-compaction-mode: periodic
 auto-compaction-retention: "1"
+
+# Limit etcd to a specific set of tls cipher suites
+cipher-suites: [
+  TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+  TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+]

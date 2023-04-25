@@ -15,9 +15,10 @@
 package schema
 
 import (
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/server/v3/storage/backend"
-	"go.uber.org/zap"
 )
 
 func UnsafeCreateAuthRolesBucket(tx backend.BatchTx) {
@@ -32,17 +33,8 @@ func (abe *authBackend) GetRole(roleName string) *authpb.Role {
 }
 
 func (atx *authBatchTx) UnsafeGetRole(roleName string) *authpb.Role {
-	_, vs := atx.tx.UnsafeRange(AuthRoles, []byte(roleName), nil, 0)
-	if len(vs) == 0 {
-		return nil
-	}
-
-	role := &authpb.Role{}
-	err := role.Unmarshal(vs[0])
-	if err != nil {
-		atx.lg.Panic("failed to unmarshal 'authpb.Role'", zap.Error(err))
-	}
-	return role
+	arx := &authReadTx{tx: atx.tx, lg: atx.lg}
+	return arx.UnsafeGetRole(roleName)
 }
 
 func (abe *authBackend) GetAllRoles() []*authpb.Role {
@@ -53,21 +45,8 @@ func (abe *authBackend) GetAllRoles() []*authpb.Role {
 }
 
 func (atx *authBatchTx) UnsafeGetAllRoles() []*authpb.Role {
-	_, vs := atx.tx.UnsafeRange(AuthRoles, []byte{0}, []byte{0xff}, -1)
-	if len(vs) == 0 {
-		return nil
-	}
-
-	roles := make([]*authpb.Role, len(vs))
-	for i := range vs {
-		role := &authpb.Role{}
-		err := role.Unmarshal(vs[i])
-		if err != nil {
-			atx.lg.Panic("failed to unmarshal 'authpb.Role'", zap.Error(err))
-		}
-		roles[i] = role
-	}
-	return roles
+	arx := &authReadTx{tx: atx.tx, lg: atx.lg}
+	return arx.UnsafeGetAllRoles()
 }
 
 func (atx *authBatchTx) UnsafePutRole(role *authpb.Role) {
@@ -85,4 +64,36 @@ func (atx *authBatchTx) UnsafePutRole(role *authpb.Role) {
 
 func (atx *authBatchTx) UnsafeDeleteRole(rolename string) {
 	atx.tx.UnsafeDelete(AuthRoles, []byte(rolename))
+}
+
+func (atx *authReadTx) UnsafeGetRole(roleName string) *authpb.Role {
+	_, vs := atx.tx.UnsafeRange(AuthRoles, []byte(roleName), nil, 0)
+	if len(vs) == 0 {
+		return nil
+	}
+
+	role := &authpb.Role{}
+	err := role.Unmarshal(vs[0])
+	if err != nil {
+		atx.lg.Panic("failed to unmarshal 'authpb.Role'", zap.Error(err))
+	}
+	return role
+}
+
+func (atx *authReadTx) UnsafeGetAllRoles() []*authpb.Role {
+	_, vs := atx.tx.UnsafeRange(AuthRoles, []byte{0}, []byte{0xff}, -1)
+	if len(vs) == 0 {
+		return nil
+	}
+
+	roles := make([]*authpb.Role, len(vs))
+	for i := range vs {
+		role := &authpb.Role{}
+		err := role.Unmarshal(vs[i])
+		if err != nil {
+			atx.lg.Panic("failed to unmarshal 'authpb.Role'", zap.Error(err))
+		}
+		roles[i] = role
+	}
+	return roles
 }

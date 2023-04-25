@@ -22,13 +22,14 @@ import (
 	"fmt"
 	"math"
 	mrand "math/rand"
-	"os"
 	"reflect"
 	"sort"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
@@ -44,7 +45,7 @@ import (
 
 func TestStoreRev(t *testing.T) {
 	b, _ := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 	defer s.Close()
 
 	for i := 1; i <= 3; i++ {
@@ -56,6 +57,7 @@ func TestStoreRev(t *testing.T) {
 }
 
 func TestStorePut(t *testing.T) {
+	lg := zaptest.NewLogger(t)
 	kv := mvccpb.KeyValue{
 		Key:            []byte("foo"),
 		Value:          []byte("bar"),
@@ -84,7 +86,7 @@ func TestStorePut(t *testing.T) {
 			nil,
 
 			revision{2, 0},
-			newTestKeyBytes(revision{2, 0}, false),
+			newTestKeyBytes(lg, revision{2, 0}, false),
 			mvccpb.KeyValue{
 				Key:            []byte("foo"),
 				Value:          []byte("bar"),
@@ -98,10 +100,10 @@ func TestStorePut(t *testing.T) {
 		{
 			revision{1, 1},
 			indexGetResp{revision{2, 0}, revision{2, 0}, 1, nil},
-			&rangeResp{[][]byte{newTestKeyBytes(revision{2, 1}, false)}, [][]byte{kvb}},
+			&rangeResp{[][]byte{newTestKeyBytes(lg, revision{2, 1}, false)}, [][]byte{kvb}},
 
 			revision{2, 0},
-			newTestKeyBytes(revision{2, 0}, false),
+			newTestKeyBytes(lg, revision{2, 0}, false),
 			mvccpb.KeyValue{
 				Key:            []byte("foo"),
 				Value:          []byte("bar"),
@@ -115,10 +117,10 @@ func TestStorePut(t *testing.T) {
 		{
 			revision{2, 0},
 			indexGetResp{revision{2, 1}, revision{2, 0}, 2, nil},
-			&rangeResp{[][]byte{newTestKeyBytes(revision{2, 1}, false)}, [][]byte{kvb}},
+			&rangeResp{[][]byte{newTestKeyBytes(lg, revision{2, 1}, false)}, [][]byte{kvb}},
 
 			revision{3, 0},
-			newTestKeyBytes(revision{3, 0}, false),
+			newTestKeyBytes(lg, revision{3, 0}, false),
 			mvccpb.KeyValue{
 				Key:            []byte("foo"),
 				Value:          []byte("bar"),
@@ -131,7 +133,7 @@ func TestStorePut(t *testing.T) {
 		},
 	}
 	for i, tt := range tests {
-		s := newFakeStore()
+		s := newFakeStore(lg)
 		b := s.b.(*fakeBackend)
 		fi := s.kvindex.(*fakeIndex)
 
@@ -177,7 +179,8 @@ func TestStorePut(t *testing.T) {
 }
 
 func TestStoreRange(t *testing.T) {
-	key := newTestKeyBytes(revision{2, 0}, false)
+	lg := zaptest.NewLogger(t)
+	key := newTestKeyBytes(lg, revision{2, 0}, false)
 	kv := mvccpb.KeyValue{
 		Key:            []byte("foo"),
 		Value:          []byte("bar"),
@@ -207,7 +210,7 @@ func TestStoreRange(t *testing.T) {
 
 	ro := RangeOptions{Limit: 1, Rev: 0, Count: false}
 	for i, tt := range tests {
-		s := newFakeStore()
+		s := newFakeStore(lg)
 		b := s.b.(*fakeBackend)
 		fi := s.kvindex.(*fakeIndex)
 
@@ -249,7 +252,8 @@ func TestStoreRange(t *testing.T) {
 }
 
 func TestStoreDeleteRange(t *testing.T) {
-	key := newTestKeyBytes(revision{2, 0}, false)
+	lg := zaptest.NewLogger(t)
+	key := newTestKeyBytes(lg, revision{2, 0}, false)
 	kv := mvccpb.KeyValue{
 		Key:            []byte("foo"),
 		Value:          []byte("bar"),
@@ -277,14 +281,14 @@ func TestStoreDeleteRange(t *testing.T) {
 			indexRangeResp{[][]byte{[]byte("foo")}, []revision{{2, 0}}},
 			rangeResp{[][]byte{key}, [][]byte{kvb}},
 
-			newTestKeyBytes(revision{3, 0}, true),
+			newTestKeyBytes(lg, revision{3, 0}, true),
 			revision{3, 0},
 			2,
 			revision{3, 0},
 		},
 	}
 	for i, tt := range tests {
-		s := newFakeStore()
+		s := newFakeStore(lg)
 		b := s.b.(*fakeBackend)
 		fi := s.kvindex.(*fakeIndex)
 
@@ -319,20 +323,22 @@ func TestStoreDeleteRange(t *testing.T) {
 		if s.currentRev != tt.wrev.main {
 			t.Errorf("#%d: rev = %+v, want %+v", i, s.currentRev, tt.wrev)
 		}
+		s.Close()
 	}
 }
 
 func TestStoreCompact(t *testing.T) {
-	s := newFakeStore()
+	lg := zaptest.NewLogger(t)
+	s := newFakeStore(lg)
 	defer s.Close()
 	b := s.b.(*fakeBackend)
 	fi := s.kvindex.(*fakeIndex)
 
 	s.currentRev = 3
 	fi.indexCompactRespc <- map[revision]struct{}{{1, 0}: {}}
-	key1 := newTestKeyBytes(revision{1, 0}, false)
-	key2 := newTestKeyBytes(revision{2, 0}, false)
-	b.tx.rangeRespc <- rangeResp{[][]byte{key1, key2}, nil}
+	key1 := newTestKeyBytes(lg, revision{1, 0}, false)
+	key2 := newTestKeyBytes(lg, revision{2, 0}, false)
+	b.tx.rangeRespc <- rangeResp{[][]byte{key1, key2}, [][]byte{[]byte("alice"), []byte("bob")}}
 
 	s.Compact(traceutil.TODO(), 3)
 	s.fifoSched.WaitFinish(1)
@@ -360,11 +366,13 @@ func TestStoreCompact(t *testing.T) {
 }
 
 func TestStoreRestore(t *testing.T) {
-	s := newFakeStore()
+	lg := zaptest.NewLogger(t)
+	s := newFakeStore(lg)
 	b := s.b.(*fakeBackend)
 	fi := s.kvindex.(*fakeIndex)
+	defer s.Close()
 
-	putkey := newTestKeyBytes(revision{3, 0}, false)
+	putkey := newTestKeyBytes(lg, revision{3, 0}, false)
 	putkv := mvccpb.KeyValue{
 		Key:            []byte("foo"),
 		Value:          []byte("bar"),
@@ -376,7 +384,7 @@ func TestStoreRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delkey := newTestKeyBytes(revision{5, 0}, true)
+	delkey := newTestKeyBytes(lg, revision{5, 0}, true)
 	delkv := mvccpb.KeyValue{
 		Key: []byte("foo"),
 	}
@@ -427,7 +435,8 @@ func TestRestoreDelete(t *testing.T) {
 	defer func() { restoreChunkKeys = oldChunk }()
 
 	b, _ := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer b.Close()
 
 	keys := make(map[string]struct{})
 	for i := 0; i < 20; i++ {
@@ -452,7 +461,7 @@ func TestRestoreDelete(t *testing.T) {
 	}
 	s.Close()
 
-	s = NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
+	s = NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 	defer s.Close()
 	for i := 0; i < 20; i++ {
 		ks := fmt.Sprintf("foo-%d", i)
@@ -473,57 +482,63 @@ func TestRestoreDelete(t *testing.T) {
 func TestRestoreContinueUnfinishedCompaction(t *testing.T) {
 	tests := []string{"recreate", "restore"}
 	for _, test := range tests {
-		b, _ := betesting.NewDefaultTmpBackend(t)
-		s0 := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
+		test := test
 
-		s0.Put([]byte("foo"), []byte("bar"), lease.NoLease)
-		s0.Put([]byte("foo"), []byte("bar1"), lease.NoLease)
-		s0.Put([]byte("foo"), []byte("bar2"), lease.NoLease)
+		t.Run(test, func(t *testing.T) {
+			b, _ := betesting.NewDefaultTmpBackend(t)
+			s0 := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 
-		// write scheduled compaction, but not do compaction
-		rbytes := newRevBytes()
-		revToBytes(revision{main: 2}, rbytes)
-		tx := s0.b.BatchTx()
-		tx.Lock()
-		UnsafeSetScheduledCompact(tx, 2)
-		tx.Unlock()
+			s0.Put([]byte("foo"), []byte("bar"), lease.NoLease)
+			s0.Put([]byte("foo"), []byte("bar1"), lease.NoLease)
+			s0.Put([]byte("foo"), []byte("bar2"), lease.NoLease)
 
-		s0.Close()
-
-		var s *store
-		switch test {
-		case "recreate":
-			s = NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-		case "restore":
-			s0.Restore(b)
-			s = s0
-		}
-
-		// wait for scheduled compaction to be finished
-		time.Sleep(100 * time.Millisecond)
-
-		if _, err := s.Range(context.TODO(), []byte("foo"), nil, RangeOptions{Rev: 1}); err != ErrCompacted {
-			t.Errorf("range on compacted rev error = %v, want %v", err, ErrCompacted)
-		}
-		// check the key in backend is deleted
-		revbytes := newRevBytes()
-		revToBytes(revision{main: 1}, revbytes)
-
-		// The disk compaction is done asynchronously and requires more time on slow disk.
-		// try 5 times for CI with slow IO.
-		for i := 0; i < 5; i++ {
-			tx := s.b.BatchTx()
+			// write scheduled compaction, but not do compaction
+			rbytes := newRevBytes()
+			revToBytes(revision{main: 2}, rbytes)
+			tx := s0.b.BatchTx()
 			tx.Lock()
-			ks, _ := tx.UnsafeRange(schema.Key, revbytes, nil, 0)
+			UnsafeSetScheduledCompact(tx, 2)
 			tx.Unlock()
-			if len(ks) != 0 {
-				time.Sleep(100 * time.Millisecond)
-				continue
-			}
-			return
-		}
 
-		t.Errorf("key for rev %+v still exists, want deleted", bytesToRev(revbytes))
+			var s *store
+			switch test {
+			case "recreate":
+				s0.Close()
+				s = NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+			case "restore":
+				// TODO(fuweid): store doesn't support to restore
+				// from a closed status because there is no lock
+				// for `Close` or action to mark it is closed.
+				s0.Restore(b)
+				s = s0
+			}
+			defer cleanup(s, b)
+
+			// wait for scheduled compaction to be finished
+			time.Sleep(100 * time.Millisecond)
+
+			if _, err := s.Range(context.TODO(), []byte("foo"), nil, RangeOptions{Rev: 1}); err != ErrCompacted {
+				t.Errorf("range on compacted rev error = %v, want %v", err, ErrCompacted)
+			}
+			// check the key in backend is deleted
+			revbytes := newRevBytes()
+			revToBytes(revision{main: 1}, revbytes)
+
+			// The disk compaction is done asynchronously and requires more time on slow disk.
+			// try 5 times for CI with slow IO.
+			for i := 0; i < 5; i++ {
+				tx := s.b.BatchTx()
+				tx.Lock()
+				ks, _ := tx.UnsafeRange(schema.Key, revbytes, nil, 0)
+				tx.Unlock()
+				if len(ks) != 0 {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				return
+			}
+			t.Errorf("key for rev %+v still exists, want deleted", bytesToRev(revbytes))
+		})
 	}
 }
 
@@ -534,9 +549,9 @@ type hashKVResult struct {
 
 // TestHashKVWhenCompacting ensures that HashKV returns correct hash when compacting.
 func TestHashKVWhenCompacting(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-	defer os.Remove(tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	rev := 10000
 	for i := 2; i <= rev; i++ {
@@ -544,31 +559,34 @@ func TestHashKVWhenCompacting(t *testing.T) {
 	}
 
 	hashCompactc := make(chan hashKVResult, 1)
-
-	donec := make(chan struct{})
 	var wg sync.WaitGroup
+	donec := make(chan struct{})
+
+	// Call HashByRev(10000) in multiple goroutines until donec is closed
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for {
-				hash, _, compactRev, err := s.HashByRev(int64(rev))
+				hash, _, err := s.HashStorage().HashByRev(int64(rev))
 				if err != nil {
 					t.Error(err)
 				}
 				select {
 				case <-donec:
 					return
-				case hashCompactc <- hashKVResult{hash, compactRev}:
+				case hashCompactc <- hashKVResult{hash.Hash, hash.CompactRevision}:
 				}
 			}
 		}()
 	}
 
+	// Check computed hashes by HashByRev are correct in a goroutine, until donec is closed
+	wg.Add(1)
 	go func() {
-		defer close(donec)
+		defer wg.Done()
 		revHash := make(map[int64]uint32)
-		for round := 0; round < 1000; round++ {
+		for {
 			r := <-hashCompactc
 			if revHash[r.compactRev] == 0 {
 				revHash[r.compactRev] = r.hash
@@ -576,17 +594,26 @@ func TestHashKVWhenCompacting(t *testing.T) {
 			if r.hash != revHash[r.compactRev] {
 				t.Errorf("Hashes differ (current %v) != (saved %v)", r.hash, revHash[r.compactRev])
 			}
+
+			select {
+			case <-donec:
+				return
+			default:
+			}
 		}
 	}()
 
-	wg.Add(1)
+	// Compact the store in a goroutine, using revision 9900 to 10000 and close donec when finished
 	go func() {
-		defer wg.Done()
+		defer close(donec)
 		for i := 100; i >= 0; i-- {
-			_, err := s.Compact(traceutil.TODO(), int64(rev-1-i))
+			_, err := s.Compact(traceutil.TODO(), int64(rev-i))
 			if err != nil {
 				t.Error(err)
 			}
+			// Wait for the compaction job to finish
+			s.fifoSched.WaitFinish(1)
+			// Leave time for calls to HashByRev to take place after each compaction
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
@@ -599,12 +626,45 @@ func TestHashKVWhenCompacting(t *testing.T) {
 	}
 }
 
+// TestHashKVWithCompactedAndFutureRevisions ensures that HashKV returns a correct hash when called
+// with a past revision (lower than compacted), a future revision, and the exact compacted revision
+func TestHashKVWithCompactedAndFutureRevisions(t *testing.T) {
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
+
+	rev := 10000
+	compactRev := rev / 2
+
+	for i := 2; i <= rev; i++ {
+		s.Put([]byte("foo"), []byte(fmt.Sprintf("bar%d", i)), lease.NoLease)
+	}
+	if _, err := s.Compact(traceutil.TODO(), int64(compactRev)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, errFutureRev := s.HashStorage().HashByRev(int64(rev + 1))
+	if errFutureRev != ErrFutureRev {
+		t.Error(errFutureRev)
+	}
+
+	_, _, errPastRev := s.HashStorage().HashByRev(int64(compactRev - 1))
+	if errPastRev != ErrCompacted {
+		t.Error(errPastRev)
+	}
+
+	_, _, errCompactRev := s.HashStorage().HashByRev(int64(compactRev))
+	if errCompactRev != nil {
+		t.Error(errCompactRev)
+	}
+}
+
 // TestHashKVZeroRevision ensures that "HashByRev(0)" computes
 // correct hash value with latest revision.
 func TestHashKVZeroRevision(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-	defer os.Remove(tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	rev := 10000
 	for i := 2; i <= rev; i++ {
@@ -614,12 +674,12 @@ func TestHashKVZeroRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hash1, _, _, err := s.HashByRev(int64(rev))
+	hash1, _, err := s.HashStorage().HashByRev(int64(rev))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hash2 uint32
-	hash2, _, _, err = s.HashByRev(0)
+	var hash2 KeyValueHash
+	hash2, _, err = s.HashStorage().HashByRev(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,9 +695,9 @@ func TestTxnPut(t *testing.T) {
 	keys := createBytesSlice(bytesN, sliceN)
 	vals := createBytesSlice(bytesN, sliceN)
 
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-	defer cleanup(s, b, tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	for i := 0; i < sliceN; i++ {
 		txn := s.Write(traceutil.TODO())
@@ -651,9 +711,9 @@ func TestTxnPut(t *testing.T) {
 
 // TestConcurrentReadNotBlockingWrite ensures Read does not blocking Write after its creation
 func TestConcurrentReadNotBlockingWrite(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-	defer os.Remove(tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	// write something to read later
 	s.Put([]byte("foo"), []byte("bar"), lease.NoLease)
@@ -720,9 +780,9 @@ func TestConcurrentReadTxAndWrite(t *testing.T) {
 		committedKVs         kvs        // committedKVs records the key-value pairs written by the finished Write Txns
 		mu                   sync.Mutex // mu protects committedKVs
 	)
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-	defer os.Remove(tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, b)
 
 	var wg sync.WaitGroup
 	wg.Add(numOfWrites)
@@ -826,39 +886,46 @@ func newTestRevBytes(rev revision) []byte {
 	return bytes
 }
 
-func newTestKeyBytes(rev revision, tombstone bool) []byte {
+func newTestKeyBytes(lg *zap.Logger, rev revision, tombstone bool) []byte {
 	bytes := newRevBytes()
 	revToBytes(rev, bytes)
 	if tombstone {
-		bytes = appendMarkTombstone(zap.NewExample(), bytes)
+		bytes = appendMarkTombstone(lg, bytes)
 	}
 	return bytes
 }
 
-func newFakeStore() *store {
+func newFakeStore(lg *zap.Logger) *store {
 	b := &fakeBackend{&fakeBatchTx{
 		Recorder:   &testutil.RecorderBuffered{},
 		rangeRespc: make(chan rangeResp, 5)}}
-	fi := &fakeIndex{
+	s := &store{
+		cfg: StoreConfig{
+			CompactionBatchLimit:    10000,
+			CompactionSleepInterval: minimumBatchInterval,
+		},
+		b:              b,
+		le:             &lease.FakeLessor{},
+		kvindex:        newFakeIndex(),
+		currentRev:     0,
+		compactMainRev: -1,
+		fifoSched:      schedule.NewFIFOScheduler(lg),
+		stopc:          make(chan struct{}),
+		lg:             lg,
+	}
+	s.ReadView, s.WriteView = &readView{s}, &writeView{s}
+	s.hashes = newHashStorage(lg, s)
+	return s
+}
+
+func newFakeIndex() *fakeIndex {
+	return &fakeIndex{
 		Recorder:              &testutil.RecorderBuffered{},
 		indexGetRespc:         make(chan indexGetResp, 1),
 		indexRangeRespc:       make(chan indexRangeResp, 1),
 		indexRangeEventsRespc: make(chan indexRangeEventsResp, 1),
 		indexCompactRespc:     make(chan map[revision]struct{}, 1),
 	}
-	s := &store{
-		cfg:            StoreConfig{CompactionBatchLimit: 10000},
-		b:              b,
-		le:             &lease.FakeLessor{},
-		kvindex:        fi,
-		currentRev:     0,
-		compactMainRev: -1,
-		fifoSched:      schedule.NewFIFOScheduler(),
-		stopc:          make(chan struct{}),
-		lg:             zap.NewExample(),
-	}
-	s.ReadView, s.WriteView = &readView{s}, &writeView{s}
-	return s
 }
 
 type rangeResp struct {
@@ -871,6 +938,8 @@ type fakeBatchTx struct {
 	rangeRespc chan rangeResp
 }
 
+func (b *fakeBatchTx) LockInsideApply()                         {}
+func (b *fakeBatchTx) LockOutsideApply()                        {}
 func (b *fakeBatchTx) Lock()                                    {}
 func (b *fakeBatchTx) Unlock()                                  {}
 func (b *fakeBatchTx) RLock()                                   {}
@@ -912,6 +981,7 @@ func (b *fakeBackend) Snapshot() backend.Snapshot                               
 func (b *fakeBackend) ForceCommit()                                               {}
 func (b *fakeBackend) Defrag() error                                              { return nil }
 func (b *fakeBackend) Close() error                                               { return nil }
+func (b *fakeBackend) SetTxPostLockInsideApplyHook(func())                        {}
 
 type indexGetResp struct {
 	rev     revision
@@ -992,7 +1062,7 @@ func (i *fakeIndex) KeyIndex(ki *keyIndex) *keyIndex {
 }
 
 func createBytesSlice(bytesN, sliceN int) [][]byte {
-	rs := [][]byte{}
+	var rs [][]byte
 	for len(rs) != sliceN {
 		v := make([]byte, bytesN)
 		if _, err := rand.Read(v); err != nil {

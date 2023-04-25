@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build !cluster_proxy
-// +build !cluster_proxy
 
 package connectivity_test
 
@@ -23,9 +22,9 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
-	"go.etcd.io/etcd/tests/v3/integration/clientv3"
+	clientv3test "go.etcd.io/etcd/tests/v3/integration/clientv3"
 	"google.golang.org/grpc"
 )
 
@@ -35,7 +34,7 @@ import (
 func TestBalancerUnderBlackholeKeepAliveWatch(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{
 		Size:                 2,
 		GRPCKeepAliveMinTime: time.Millisecond, // avoid too_many_pings
 		UseBridge:            true,
@@ -168,10 +167,9 @@ func TestBalancerUnderBlackholeNoKeepAliveSerializableGet(t *testing.T) {
 func testBalancerUnderBlackholeNoKeepAlive(t *testing.T, op func(*clientv3.Client, context.Context) error) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{
-		Size:               2,
-		SkipCreatingClient: true,
-		UseBridge:          true,
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{
+		Size:      2,
+		UseBridge: true,
 	})
 	defer clus.Terminate(t)
 

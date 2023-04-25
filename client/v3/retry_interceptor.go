@@ -24,12 +24,13 @@ import (
 	"sync"
 	"time"
 
-	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 )
 
 // unaryClientInterceptor returns a new retrying unary client interceptor.
@@ -54,6 +55,7 @@ func (c *Client) unaryClientInterceptor(optFuncs ...retryOption) grpc.UnaryClien
 			c.GetLogger().Debug(
 				"retrying of unary invoker",
 				zap.String("target", cc.Target()),
+				zap.String("method", method),
 				zap.Uint("attempt", attempt),
 			)
 			lastErr = invoker(ctx, method, req, reply, cc, grpcOpts...)
@@ -63,6 +65,7 @@ func (c *Client) unaryClientInterceptor(optFuncs ...retryOption) grpc.UnaryClien
 			c.GetLogger().Warn(
 				"retrying of unary invoker failed",
 				zap.String("target", cc.Target()),
+				zap.String("method", method),
 				zap.Uint("attempt", attempt),
 				zap.Error(lastErr),
 			)
@@ -75,20 +78,14 @@ func (c *Client) unaryClientInterceptor(optFuncs ...retryOption) grpc.UnaryClien
 				continue
 			}
 			if c.shouldRefreshToken(lastErr, callOpts) {
-				// clear auth token before refreshing it.
-				// call c.Auth.Authenticate with an invalid token will always fail the auth check on the server-side,
-				// if the server has not apply the patch of pr #12165 (https://github.com/etcd-io/etcd/pull/12165)
-				// and a rpctypes.ErrInvalidAuthToken will recursively call c.getToken until system run out of resource.
-				c.authTokenBundle.UpdateAuthToken("")
-
-				gterr := c.getToken(ctx)
-				if gterr != nil {
+				gtErr := c.refreshToken(ctx)
+				if gtErr != nil {
 					c.GetLogger().Warn(
 						"retrying of unary invoker failed to fetch new auth token",
 						zap.String("target", cc.Target()),
-						zap.Error(gterr),
+						zap.Error(gtErr),
 					)
-					return gterr // lastErr must be invalid auth token
+					return gtErr // lastErr must be invalid auth token
 				}
 				continue
 			}
@@ -112,15 +109,12 @@ func (c *Client) streamClientInterceptor(optFuncs ...retryOption) grpc.StreamCli
 	intOpts := reuseOrNewWithCallOptions(defaultOptions, optFuncs)
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 		ctx = withVersion(ctx)
-		// getToken automatically
-		// TODO(cfc4n): keep this code block, remove codes about getToken in client.go after pr #12165 merged.
-		if c.authTokenBundle != nil {
-			// equal to c.Username != "" && c.Password != ""
-			err := c.getToken(ctx)
-			if err != nil && rpctypes.Error(err) != rpctypes.ErrAuthNotEnabled {
-				c.GetLogger().Error("clientv3/retry_interceptor: getToken failed", zap.Error(err))
-				return nil, err
-			}
+		// getToken automatically. Otherwise, auth token may be invalid after watch reconnection because the token has expired
+		// (see https://github.com/etcd-io/etcd/issues/11954 for more).
+		err := c.getToken(ctx)
+		if err != nil {
+			c.GetLogger().Error("clientv3/retry_interceptor: getToken failed", zap.Error(err))
+			return nil, err
 		}
 		grpcOpts, retryOpts := filterCallOptions(opts)
 		callOpts := reuseOrNewWithCallOptions(intOpts, retryOpts)
@@ -160,6 +154,23 @@ func (c *Client) shouldRefreshToken(err error, callOpts *options) bool {
 
 	return callOpts.retryAuth &&
 		(rpctypes.Error(err) == rpctypes.ErrInvalidAuthToken || rpctypes.Error(err) == rpctypes.ErrAuthOldRevision)
+}
+
+func (c *Client) refreshToken(ctx context.Context) error {
+	if c.authTokenBundle == nil {
+		// c.authTokenBundle will be initialized only when
+		// c.Username != "" && c.Password != "".
+		//
+		// When users use the TLS CommonName based authentication, the
+		// authTokenBundle is always nil. But it's possible for the clients
+		// to get `rpctypes.ErrAuthOldRevision` response when the clients
+		// concurrently modify auth data (e.g, addUser, deleteUser etc.).
+		// In this case, there is no need to refresh the token; instead the
+		// clients just need to retry the operations (e.g. Put, Delete etc).
+		return nil
+	}
+
+	return c.getToken(ctx)
 }
 
 // type serverStreamingRetryingStream is the implementation of grpc.ClientStream that acts as a
@@ -260,12 +271,9 @@ func (s *serverStreamingRetryingStream) receiveMsgAndIndicateRetry(m interface{}
 		return true, err
 	}
 	if s.client.shouldRefreshToken(err, s.callOpts) {
-		// clear auth token to avoid failure when call getToken
-		s.client.authTokenBundle.UpdateAuthToken("")
-
-		gterr := s.client.getToken(s.ctx)
-		if gterr != nil {
-			s.client.lg.Warn("retry failed to fetch new auth token", zap.Error(gterr))
+		gtErr := s.client.refreshToken(s.ctx)
+		if gtErr != nil {
+			s.client.lg.Warn("retry failed to fetch new auth token", zap.Error(gtErr))
 			return false, err // return the original error for simplicity
 		}
 		return true, err
@@ -322,7 +330,7 @@ func isSafeRetry(c *Client, err error, callOpts *options) bool {
 	// customer provides mix of learners (not yet voters) and voters with an
 	// expectation to pick voter in the next attempt.
 	// TODO: Ideally client should be 'aware' which endpoint represents: leader/voter/learner with high probability.
-	if errors.Is(err, rpctypes.ErrGPRCNotSupportedForLearner) && len(c.Endpoints()) > 1 {
+	if errors.Is(err, rpctypes.ErrGRPCNotSupportedForLearner) && len(c.Endpoints()) > 1 {
 		return true
 	}
 
@@ -383,7 +391,7 @@ func withMax(maxRetries uint) retryOption {
 	}}
 }
 
-// WithBackoff sets the `BackoffFunc `used to control time between retries.
+// WithBackoff sets the `BackoffFunc` used to control time between retries.
 func withBackoff(bf backoffFunc) retryOption {
 	return retryOption{applyFunc: func(o *options) {
 		o.backoffFunc = bf

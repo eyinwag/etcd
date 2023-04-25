@@ -20,9 +20,10 @@ import (
 	"fmt"
 	"io"
 
-	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 )
 
 type (
@@ -33,6 +34,14 @@ type (
 	HashKVResponse     pb.HashKVResponse
 	MoveLeaderResponse pb.MoveLeaderResponse
 	DowngradeResponse  pb.DowngradeResponse
+
+	DowngradeAction pb.DowngradeRequest_DowngradeAction
+)
+
+const (
+	DowngradeValidate = DowngradeAction(pb.DowngradeRequest_VALIDATE)
+	DowngradeEnable   = DowngradeAction(pb.DowngradeRequest_ENABLE)
+	DowngradeCancel   = DowngradeAction(pb.DowngradeRequest_CANCEL)
 )
 
 type Maintenance interface {
@@ -76,12 +85,8 @@ type Maintenance interface {
 
 	// Downgrade requests downgrades, verifies feasibility or cancels downgrade
 	// on the cluster version.
-	// action is one of the following:
-	// VALIDATE = 0;
-	// ENABLE = 1;
-	// CANCEL = 2;
 	// Supported since etcd 3.5.
-	Downgrade(ctx context.Context, action int32, version string) (*DowngradeResponse, error)
+	Downgrade(ctx context.Context, action DowngradeAction, version string) (*DowngradeResponse, error)
 }
 
 // SnapshotResponse is aggregated response from the snapshot stream.
@@ -115,18 +120,7 @@ func NewMaintenance(c *Client) Maintenance {
 				return nil, nil, fmt.Errorf("failed to dial endpoint %s with maintenance client: %v", endpoint, err)
 			}
 
-			//get token with established connection
-			dctx := c.ctx
-			cancel := func() {}
-			if c.cfg.DialTimeout > 0 {
-				dctx, cancel = context.WithTimeout(c.ctx, c.cfg.DialTimeout)
-			}
-			err = c.getToken(dctx)
-			cancel()
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to getToken from endpoint %s with maintenance client: %v", endpoint, err)
-			}
-			cancel = func() { conn.Close() }
+			cancel := func() { conn.Close() }
 			return RetryMaintenanceClient(c, conn), cancel, nil
 		},
 		remote: RetryMaintenanceClient(c, c.conn),
@@ -246,6 +240,7 @@ func (m *maintenance) SnapshotWithVersion(ctx context.Context) (*SnapshotRespons
 	resp, err := ss.Recv()
 	if err != nil {
 		m.logAndCloseWithError(err, pw)
+		return nil, err
 	}
 	go func() {
 		// Saving response is blocking
@@ -267,10 +262,11 @@ func (m *maintenance) SnapshotWithVersion(ctx context.Context) (*SnapshotRespons
 			}
 		}
 	}()
+
 	return &SnapshotResponse{
-		Header:   resp.Header,
+		Header:   resp.GetHeader(),
 		Snapshot: &snapshotReadCloser{ctx: ctx, ReadCloser: pr},
-		Version:  resp.Version,
+		Version:  resp.GetVersion(),
 	}, err
 }
 
@@ -337,14 +333,14 @@ func (m *maintenance) MoveLeader(ctx context.Context, transfereeID uint64) (*Mov
 	return (*MoveLeaderResponse)(resp), toErr(ctx, err)
 }
 
-func (m *maintenance) Downgrade(ctx context.Context, action int32, version string) (*DowngradeResponse, error) {
-	actionType := pb.DowngradeRequest_VALIDATE
+func (m *maintenance) Downgrade(ctx context.Context, action DowngradeAction, version string) (*DowngradeResponse, error) {
+	var actionType pb.DowngradeRequest_DowngradeAction
 	switch action {
-	case 0:
+	case DowngradeValidate:
 		actionType = pb.DowngradeRequest_VALIDATE
-	case 1:
+	case DowngradeEnable:
 		actionType = pb.DowngradeRequest_ENABLE
-	case 2:
+	case DowngradeCancel:
 		actionType = pb.DowngradeRequest_CANCEL
 	default:
 		return nil, errors.New("etcdclient: unknown downgrade action")

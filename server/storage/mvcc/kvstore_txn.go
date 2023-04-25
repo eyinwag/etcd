@@ -16,13 +16,15 @@ package mvcc
 
 import (
 	"context"
+	"fmt"
+
+	"go.uber.org/zap"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/schema"
-	"go.uber.org/zap"
 )
 
 type storeTxnRead struct {
@@ -62,6 +64,68 @@ func (tr *storeTxnRead) Range(ctx context.Context, key, end []byte, ro RangeOpti
 	return tr.rangeKeys(ctx, key, end, tr.Rev(), ro)
 }
 
+func (tr *storeTxnRead) rangeKeys(ctx context.Context, key, end []byte, curRev int64, ro RangeOptions) (*RangeResult, error) {
+	rev := ro.Rev
+	if rev > curRev {
+		return &RangeResult{KVs: nil, Count: -1, Rev: curRev}, ErrFutureRev
+	}
+	if rev <= 0 {
+		rev = curRev
+	}
+	if rev < tr.s.compactMainRev {
+		return &RangeResult{KVs: nil, Count: -1, Rev: 0}, ErrCompacted
+	}
+	if ro.Count {
+		total := tr.s.kvindex.CountRevisions(key, end, rev)
+		tr.trace.Step("count revisions from in-memory index tree")
+		return &RangeResult{KVs: nil, Count: total, Rev: curRev}, nil
+	}
+	revpairs, total := tr.s.kvindex.Revisions(key, end, rev, int(ro.Limit))
+	tr.trace.Step("range keys from in-memory index tree")
+	if len(revpairs) == 0 {
+		return &RangeResult{KVs: nil, Count: total, Rev: curRev}, nil
+	}
+
+	limit := int(ro.Limit)
+	if limit <= 0 || limit > len(revpairs) {
+		limit = len(revpairs)
+	}
+
+	kvs := make([]mvccpb.KeyValue, limit)
+	revBytes := newRevBytes()
+	for i, revpair := range revpairs[:len(kvs)] {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("rangeKeys: context cancelled: %w", ctx.Err())
+		default:
+		}
+		revToBytes(revpair, revBytes)
+		_, vs := tr.tx.UnsafeRange(schema.Key, revBytes, nil, 0)
+		if len(vs) != 1 {
+			tr.s.lg.Fatal(
+				"range failed to find revision pair",
+				zap.Int64("revision-main", revpair.main),
+				zap.Int64("revision-sub", revpair.sub),
+				zap.Int64("revision-current", curRev),
+				zap.Int64("range-option-rev", ro.Rev),
+				zap.Int64("range-option-limit", ro.Limit),
+				zap.Binary("key", key),
+				zap.Binary("end", end),
+				zap.Int("len-revpairs", len(revpairs)),
+				zap.Int("len-values", len(vs)),
+			)
+		}
+		if err := kvs[i].Unmarshal(vs[0]); err != nil {
+			tr.s.lg.Fatal(
+				"failed to unmarshal mvccpb.KeyValue",
+				zap.Error(err),
+			)
+		}
+	}
+	tr.trace.Step("range keys from bolt db")
+	return &RangeResult{KVs: kvs, Count: total, Rev: curRev}, nil
+}
+
 func (tr *storeTxnRead) End() {
 	tr.tx.RUnlock() // RUnlock signals the end of concurrentReadTx.
 	tr.s.mu.RUnlock()
@@ -78,7 +142,7 @@ type storeTxnWrite struct {
 func (s *store) Write(trace *traceutil.Trace) TxnWrite {
 	s.mu.RLock()
 	tx := s.b.BatchTx()
-	tx.Lock()
+	tx.LockInsideApply()
 	tw := &storeTxnWrite{
 		storeTxnRead: storeTxnRead{s, tx, 0, 0, trace},
 		tx:           tx,
@@ -124,61 +188,6 @@ func (tw *storeTxnWrite) End() {
 	tw.s.mu.RUnlock()
 }
 
-func (tr *storeTxnRead) rangeKeys(ctx context.Context, key, end []byte, curRev int64, ro RangeOptions) (*RangeResult, error) {
-	rev := ro.Rev
-	if rev > curRev {
-		return &RangeResult{KVs: nil, Count: -1, Rev: curRev}, ErrFutureRev
-	}
-	if rev <= 0 {
-		rev = curRev
-	}
-	if rev < tr.s.compactMainRev {
-		return &RangeResult{KVs: nil, Count: -1, Rev: 0}, ErrCompacted
-	}
-	if ro.Count {
-		total := tr.s.kvindex.CountRevisions(key, end, rev)
-		tr.trace.Step("count revisions from in-memory index tree")
-		return &RangeResult{KVs: nil, Count: total, Rev: curRev}, nil
-	}
-	revpairs, total := tr.s.kvindex.Revisions(key, end, rev, int(ro.Limit))
-	tr.trace.Step("range keys from in-memory index tree")
-	if len(revpairs) == 0 {
-		return &RangeResult{KVs: nil, Count: total, Rev: curRev}, nil
-	}
-
-	limit := int(ro.Limit)
-	if limit <= 0 || limit > len(revpairs) {
-		limit = len(revpairs)
-	}
-
-	kvs := make([]mvccpb.KeyValue, limit)
-	revBytes := newRevBytes()
-	for i, revpair := range revpairs[:len(kvs)] {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		revToBytes(revpair, revBytes)
-		_, vs := tr.tx.UnsafeRange(schema.Key, revBytes, nil, 0)
-		if len(vs) != 1 {
-			tr.s.lg.Fatal(
-				"range failed to find revision pair",
-				zap.Int64("revision-main", revpair.main),
-				zap.Int64("revision-sub", revpair.sub),
-			)
-		}
-		if err := kvs[i].Unmarshal(vs[0]); err != nil {
-			tr.s.lg.Fatal(
-				"failed to unmarshal mvccpb.KeyValue",
-				zap.Error(err),
-			)
-		}
-	}
-	tr.trace.Step("range keys from bolt db")
-	return &RangeResult{KVs: kvs, Count: total, Rev: curRev}, nil
-}
-
 func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	rev := tw.beginRev + 1
 	c := rev
@@ -219,6 +228,11 @@ func (tw *storeTxnWrite) put(key, value []byte, leaseID lease.LeaseID) {
 	tw.s.kvindex.Put(key, idxRev)
 	tw.changes = append(tw.changes, kv)
 	tw.trace.Step("store kv pair into bolt db")
+
+	if oldLease == leaseID {
+		tw.trace.Step("attach lease to kv pair")
+		return
+	}
 
 	if oldLease != lease.NoLease {
 		if tw.s.le == nil {

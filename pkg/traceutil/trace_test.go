@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/zap"
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
 )
 
 func TestGet(t *testing.T) {
@@ -204,7 +204,7 @@ func TestLog(t *testing.T) {
 			logPath := filepath.Join(os.TempDir(), fmt.Sprintf("test-log-%d", time.Now().UnixNano()))
 			defer os.RemoveAll(logPath)
 
-			lcfg := zap.NewProductionConfig()
+			lcfg := logutil.DefaultZapLoggerConfig
 			lcfg.OutputPaths = []string{logPath}
 			lcfg.ErrorOutputPaths = []string{logPath}
 			lg, _ := lcfg.Build()
@@ -237,7 +237,7 @@ func TestLogIfLong(t *testing.T) {
 	}{
 		{
 			name:      "When the duration is smaller than threshold",
-			threshold: time.Duration(200 * time.Millisecond),
+			threshold: 200 * time.Millisecond,
 			trace: &Trace{
 				operation: "Test",
 				startTime: time.Now().Add(-100 * time.Millisecond),
@@ -250,7 +250,7 @@ func TestLogIfLong(t *testing.T) {
 		},
 		{
 			name:      "When the duration is longer than threshold",
-			threshold: time.Duration(50 * time.Millisecond),
+			threshold: 50 * time.Millisecond,
 			trace: &Trace{
 				operation: "Test",
 				startTime: time.Now().Add(-100 * time.Millisecond),
@@ -265,7 +265,7 @@ func TestLogIfLong(t *testing.T) {
 		},
 		{
 			name:      "When not all steps are longer than step threshold",
-			threshold: time.Duration(50 * time.Millisecond),
+			threshold: 50 * time.Millisecond,
 			trace: &Trace{
 				operation: "Test",
 				startTime: time.Now().Add(-100 * time.Millisecond),
@@ -285,7 +285,7 @@ func TestLogIfLong(t *testing.T) {
 			logPath := filepath.Join(os.TempDir(), fmt.Sprintf("test-log-%d", time.Now().UnixNano()))
 			defer os.RemoveAll(logPath)
 
-			lcfg := zap.NewProductionConfig()
+			lcfg := logutil.DefaultZapLoggerConfig
 			lcfg.OutputPaths = []string{logPath}
 			lcfg.ErrorOutputPaths = []string{logPath}
 			lg, _ := lcfg.Build()

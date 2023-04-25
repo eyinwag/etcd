@@ -22,74 +22,68 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/tests/v3/framework/integration"
-	"google.golang.org/grpc"
 )
 
 func TestAuthority(t *testing.T) {
 	tcs := []struct {
-		name   string
-		useTCP bool
-		useTLS bool
-		// Pattern used to generate endpoints for client. Fields filled
-		// %d - will be filled with member grpc port
-		// %s - will be filled with member name
-		clientURLPattern string
-
-		// Pattern used to validate authority received by server. Fields filled:
-		// %d - will be filled with first member grpc port
-		// %s - will be filled with first member name
+		name                   string
+		useTCP                 bool
+		useTLS                 bool
+		clientURLPattern       string
 		expectAuthorityPattern string
 	}{
 		{
 			name:                   "unix:path",
-			clientURLPattern:       "unix:localhost:%s",
-			expectAuthorityPattern: "localhost:%s",
+			clientURLPattern:       "unix:localhost:${MEMBER_NAME}",
+			expectAuthorityPattern: "localhost:${MEMBER_NAME}",
 		},
 		{
 			name:                   "unix://absolute_path",
-			clientURLPattern:       "unix://localhost:%s",
-			expectAuthorityPattern: "localhost:%s",
+			clientURLPattern:       "unix://localhost:${MEMBER_NAME}",
+			expectAuthorityPattern: "localhost:${MEMBER_NAME}",
 		},
 		// "unixs" is not standard schema supported by etcd
 		{
 			name:                   "unixs:absolute_path",
 			useTLS:                 true,
-			clientURLPattern:       "unixs:localhost:%s",
-			expectAuthorityPattern: "localhost:%s",
+			clientURLPattern:       "unixs:localhost:${MEMBER_NAME}",
+			expectAuthorityPattern: "localhost:${MEMBER_NAME}",
 		},
 		{
 			name:                   "unixs://absolute_path",
 			useTLS:                 true,
-			clientURLPattern:       "unixs://localhost:%s",
-			expectAuthorityPattern: "localhost:%s",
+			clientURLPattern:       "unixs://localhost:${MEMBER_NAME}",
+			expectAuthorityPattern: "localhost:${MEMBER_NAME}",
 		},
 		{
 			name:                   "http://domain[:port]",
 			useTCP:                 true,
-			clientURLPattern:       "http://localhost:%d",
-			expectAuthorityPattern: "localhost:%d",
+			clientURLPattern:       "http://localhost:${MEMBER_PORT}",
+			expectAuthorityPattern: "localhost:${MEMBER_PORT}",
 		},
 		{
 			name:                   "https://domain[:port]",
 			useTLS:                 true,
 			useTCP:                 true,
-			clientURLPattern:       "https://localhost:%d",
-			expectAuthorityPattern: "localhost:%d",
+			clientURLPattern:       "https://localhost:${MEMBER_PORT}",
+			expectAuthorityPattern: "localhost:${MEMBER_PORT}",
 		},
 		{
 			name:                   "http://address[:port]",
 			useTCP:                 true,
-			clientURLPattern:       "http://127.0.0.1:%d",
-			expectAuthorityPattern: "127.0.0.1:%d",
+			clientURLPattern:       "http://127.0.0.1:${MEMBER_PORT}",
+			expectAuthorityPattern: "127.0.0.1:${MEMBER_PORT}",
 		},
 		{
 			name:                   "https://address[:port]",
 			useTCP:                 true,
 			useTLS:                 true,
-			clientURLPattern:       "https://127.0.0.1:%d",
-			expectAuthorityPattern: "127.0.0.1:%d",
+			clientURLPattern:       "https://127.0.0.1:${MEMBER_PORT}",
+			expectAuthorityPattern: "127.0.0.1:${MEMBER_PORT}",
 		},
 	}
 	for _, tc := range tcs {
@@ -102,18 +96,19 @@ func TestAuthority(t *testing.T) {
 					UseIP:  tc.useTCP,
 				}
 				cfg, tlsConfig := setupTLS(t, tc.useTLS, cfg)
-				clus := integration.NewClusterV3(t, &cfg)
+				clus := integration.NewCluster(t, &cfg)
 				defer clus.Terminate(t)
 
 				kv := setupClient(t, tc.clientURLPattern, clus, tlsConfig)
 				defer kv.Close()
 
+				putRequestMethod := "/etcdserverpb.KV/Put"
 				_, err := kv.Put(context.TODO(), "foo", "bar")
 				if err != nil {
 					t.Fatal(err)
 				}
 
-				assertAuthority(t, templateAuthority(t, tc.expectAuthorityPattern, clus.Members[0]), clus)
+				assertAuthority(t, templateAuthority(t, tc.expectAuthorityPattern, clus.Members[0]), clus, putRequestMethod)
 			})
 		}
 	}
@@ -132,7 +127,7 @@ func setupTLS(t *testing.T, useTLS bool, cfg integration.ClusterConfig) (integra
 	return cfg, nil
 }
 
-func setupClient(t *testing.T, endpointPattern string, clus *integration.ClusterV3, tlsConfig *tls.Config) *clientv3.Client {
+func setupClient(t *testing.T, endpointPattern string, clus *integration.Cluster, tlsConfig *tls.Config) *clientv3.Client {
 	t.Helper()
 	endpoints := templateEndpoints(t, endpointPattern, clus)
 	kv, err := clientv3.New(clientv3.Config{
@@ -147,20 +142,13 @@ func setupClient(t *testing.T, endpointPattern string, clus *integration.Cluster
 	return kv
 }
 
-func templateEndpoints(t *testing.T, pattern string, clus *integration.ClusterV3) []string {
+func templateEndpoints(t *testing.T, pattern string, clus *integration.Cluster) []string {
 	t.Helper()
-	endpoints := []string{}
+	var endpoints []string
 	for _, m := range clus.Members {
 		ent := pattern
-		if strings.Contains(ent, "%d") {
-			ent = fmt.Sprintf(ent, integration.GrpcPortNumber(m.UniqNumber, m.MemberNumber))
-		}
-		if strings.Contains(ent, "%s") {
-			ent = fmt.Sprintf(ent, m.Name)
-		}
-		if strings.Contains(ent, "%") {
-			t.Fatalf("Failed to template pattern, %% symbol left %q", ent)
-		}
+		ent = strings.ReplaceAll(ent, "${MEMBER_PORT}", m.GrpcPortNumber())
+		ent = strings.ReplaceAll(ent, "${MEMBER_NAME}", m.Name)
 		endpoints = append(endpoints, ent)
 	}
 	return endpoints
@@ -169,23 +157,19 @@ func templateEndpoints(t *testing.T, pattern string, clus *integration.ClusterV3
 func templateAuthority(t *testing.T, pattern string, m *integration.Member) string {
 	t.Helper()
 	authority := pattern
-	if strings.Contains(authority, "%d") {
-		authority = fmt.Sprintf(authority, integration.GrpcPortNumber(m.UniqNumber, m.MemberNumber))
-	}
-	if strings.Contains(authority, "%s") {
-		authority = fmt.Sprintf(authority, m.Name)
-	}
-	if strings.Contains(authority, "%") {
-		t.Fatalf("Failed to template pattern, %% symbol left %q", authority)
-	}
+	authority = strings.ReplaceAll(authority, "${MEMBER_PORT}", m.GrpcPortNumber())
+	authority = strings.ReplaceAll(authority, "${MEMBER_NAME}", m.Name)
 	return authority
 }
 
-func assertAuthority(t *testing.T, expectedAuthority string, clus *integration.ClusterV3) {
+func assertAuthority(t *testing.T, expectedAuthority string, clus *integration.Cluster, filterMethod string) {
 	t.Helper()
 	requestsFound := 0
 	for _, m := range clus.Members {
 		for _, r := range m.RecordedRequests() {
+			if filterMethod != "" && r.FullMethod != filterMethod {
+				continue
+			}
 			requestsFound++
 			if r.Authority != expectedAuthority {
 				t.Errorf("Got unexpected authority header, member: %q, request: %q, got authority: %q, expected %q", m.Name, r.FullMethod, r.Authority, expectedAuthority)

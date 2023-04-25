@@ -22,10 +22,11 @@ import (
 	"reflect"
 	"testing"
 
+	"go.uber.org/zap/zaptest"
+
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
-	"go.uber.org/zap"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 var testSnap = &raftpb.Snapshot{
@@ -46,7 +47,7 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	err = ss.save(testSnap)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +69,7 @@ func TestBadCRC(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	err = ss.save(testSnap)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +79,7 @@ func TestBadCRC(t *testing.T) {
 	// fake a crc mismatch
 	crcTable = crc32.MakeTable(crc32.Koopman)
 
-	_, err = Read(zap.NewExample(), filepath.Join(dir, fmt.Sprintf("%016x-%016x.snap", 1, 1)))
+	_, err = Read(zaptest.NewLogger(t), filepath.Join(dir, fmt.Sprintf("%016x-%016x.snap", 1, 1)))
 	if err == nil || err != ErrCRCMismatch {
 		t.Errorf("err = %v, want %v", err, ErrCRCMismatch)
 	}
@@ -98,7 +99,7 @@ func TestFailback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	err = ss.save(testSnap)
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +134,7 @@ func TestSnapNames(t *testing.T) {
 			f.Close()
 		}
 	}
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	names, err := ss.snapNames()
 	if err != nil {
 		t.Errorf("err = %v, want nil", err)
@@ -154,7 +155,7 @@ func TestLoadNewestSnap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	err = ss.save(testSnap)
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +219,7 @@ func TestNoSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	_, err = ss.Load()
 	if err != ErrNoSnapshot {
 		t.Errorf("err = %v, want %v", err, ErrNoSnapshot)
@@ -238,7 +239,7 @@ func TestEmptySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Read(zap.NewExample(), filepath.Join(dir, "1.snap"))
+	_, err = Read(zaptest.NewLogger(t), filepath.Join(dir, "1.snap"))
 	if err != ErrEmptySnapshot {
 		t.Errorf("err = %v, want %v", err, ErrEmptySnapshot)
 	}
@@ -259,7 +260,7 @@ func TestAllSnapshotBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 	_, err = ss.Load()
 	if err != ErrNoSnapshot {
 		t.Errorf("err = %v, want %v", err, ErrNoSnapshot)
@@ -282,7 +283,7 @@ func TestReleaseSnapDBs(t *testing.T) {
 		}
 	}
 
-	ss := New(zap.NewExample(), dir)
+	ss := New(zaptest.NewLogger(t), dir)
 
 	if err := ss.ReleaseSnapDBs(raftpb.Snapshot{Metadata: raftpb.SnapshotMetadata{Index: 300}}); err != nil {
 		t.Fatal(err)

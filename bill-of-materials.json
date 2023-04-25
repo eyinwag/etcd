@@ -1,5 +1,32 @@
 [
 	{
+		"project": "github.com/VividCortex/ewma",
+		"licenses": [
+			{
+				"type": "MIT License",
+				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/anishathalye/porcupine",
+		"licenses": [
+			{
+				"type": "MIT License",
+				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/benbjohnson/clock",
+		"licenses": [
+			{
+				"type": "MIT License",
+				"confidence": 1
+			}
+		]
+	},
+	{
 		"project": "github.com/beorn7/perks/quantile",
 		"licenses": [
 			{
@@ -27,15 +54,6 @@
 		]
 	},
 	{
-		"project": "github.com/certifi/gocertifi",
-		"licenses": [
-			{
-				"type": "Mozilla Public License 2.0",
-				"confidence": 1
-			}
-		]
-	},
-	{
 		"project": "github.com/cespare/xxhash/v2",
 		"licenses": [
 			{
@@ -45,29 +63,11 @@
 		]
 	},
 	{
-		"project": "github.com/cockroachdb/datadriven",
+		"project": "github.com/cheggaaa/pb/v3",
 		"licenses": [
 			{
-				"type": "Apache License 2.0",
-				"confidence": 1
-			}
-		]
-	},
-	{
-		"project": "github.com/cockroachdb/errors",
-		"licenses": [
-			{
-				"type": "Apache License 2.0",
-				"confidence": 1
-			}
-		]
-	},
-	{
-		"project": "github.com/cockroachdb/logtags",
-		"licenses": [
-			{
-				"type": "Apache License 2.0",
-				"confidence": 1
+				"type": "BSD 3-clause \"New\" or \"Revised\" License",
+				"confidence": 0.9916666666666667
 			}
 		]
 	},
@@ -86,15 +86,6 @@
 			{
 				"type": "Apache License 2.0",
 				"confidence": 0.9966703662597114
-			}
-		]
-	},
-	{
-		"project": "github.com/cpuguy83/go-md2man/v2/md2man",
-		"licenses": [
-			{
-				"type": "MIT License",
-				"confidence": 1
 			}
 		]
 	},
@@ -126,11 +117,29 @@
 		]
 	},
 	{
-		"project": "github.com/getsentry/raven-go",
+		"project": "github.com/fatih/color",
 		"licenses": [
 			{
-				"type": "BSD 3-clause \"New\" or \"Revised\" License",
-				"confidence": 0.9663865546218487
+				"type": "MIT License",
+				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/go-logr/logr",
+		"licenses": [
+			{
+				"type": "Apache License 2.0",
+				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/go-logr/stdr",
+		"licenses": [
+			{
+				"type": "Apache License 2.0",
+				"confidence": 1
 			}
 		]
 	},
@@ -144,7 +153,7 @@
 		]
 	},
 	{
-		"project": "github.com/golang-jwt/jwt",
+		"project": "github.com/golang-jwt/jwt/v4",
 		"licenses": [
 			{
 				"type": "MIT License",
@@ -176,6 +185,15 @@
 			{
 				"type": "Apache License 2.0",
 				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/google/go-cmp/cmp",
+		"licenses": [
+			{
+				"type": "BSD 3-clause \"New\" or \"Revised\" License",
+				"confidence": 0.9663865546218487
 			}
 		]
 	},
@@ -216,6 +234,15 @@
 		]
 	},
 	{
+		"project": "github.com/grpc-ecosystem/grpc-gateway/v2",
+		"licenses": [
+			{
+				"type": "BSD 3-clause \"New\" or \"Revised\" License",
+				"confidence": 0.979253112033195
+			}
+		]
+	},
+	{
 		"project": "github.com/inconshreveable/mousetrap",
 		"licenses": [
 			{
@@ -230,6 +257,24 @@
 			{
 				"type": "Apache License 2.0",
 				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/mattn/go-colorable",
+		"licenses": [
+			{
+				"type": "MIT License",
+				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "github.com/mattn/go-isatty",
+		"licenses": [
+			{
+				"type": "MIT License",
+				"confidence": 0.9587628865979382
 			}
 		]
 	},
@@ -257,15 +302,6 @@
 			{
 				"type": "MIT License",
 				"confidence": 0.9891304347826086
-			}
-		]
-	},
-	{
-		"project": "github.com/pkg/errors",
-		"licenses": [
-			{
-				"type": "BSD 2-clause \"Simplified\" License",
-				"confidence": 1
 			}
 		]
 	},
@@ -315,16 +351,7 @@
 		]
 	},
 	{
-		"project": "github.com/russross/blackfriday/v2",
-		"licenses": [
-			{
-				"type": "BSD 2-clause \"Simplified\" License",
-				"confidence": 0.9626168224299065
-			}
-		]
-	},
-	{
-		"project": "github.com/shurcooL/sanitized_anchor_name",
+		"project": "github.com/rivo/uniseg",
 		"licenses": [
 			{
 				"type": "MIT License",
@@ -369,7 +396,7 @@
 		]
 	},
 	{
-		"project": "github.com/stretchr/testify/assert",
+		"project": "github.com/stretchr/testify",
 		"licenses": [
 			{
 				"type": "MIT License",
@@ -383,15 +410,6 @@
 			{
 				"type": "MIT License",
 				"confidence": 0.9891304347826086
-			}
-		]
-	},
-	{
-		"project": "github.com/urfave/cli",
-		"licenses": [
-			{
-				"type": "MIT License",
-				"confidence": 1
 			}
 		]
 	},
@@ -477,15 +495,6 @@
 		]
 	},
 	{
-		"project": "go.etcd.io/etcd/raft/v3",
-		"licenses": [
-			{
-				"type": "Apache License 2.0",
-				"confidence": 1
-			}
-		]
-	},
-	{
 		"project": "go.etcd.io/etcd/server/v3",
 		"licenses": [
 			{
@@ -513,6 +522,15 @@
 		]
 	},
 	{
+		"project": "go.etcd.io/raft/v3",
+		"licenses": [
+			{
+				"type": "Apache License 2.0",
+				"confidence": 1
+			}
+		]
+	},
+	{
 		"project": "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc",
 		"licenses": [
 			{
@@ -531,6 +549,15 @@
 		]
 	},
 	{
+		"project": "go.opentelemetry.io/otel/exporters/otlp/internal/retry",
+		"licenses": [
+			{
+				"type": "Apache License 2.0",
+				"confidence": 1
+			}
+		]
+	},
+	{
 		"project": "go.opentelemetry.io/otel/exporters/otlp/otlptrace",
 		"licenses": [
 			{
@@ -541,6 +568,15 @@
 	},
 	{
 		"project": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc",
+		"licenses": [
+			{
+				"type": "Apache License 2.0",
+				"confidence": 1
+			}
+		]
+	},
+	{
+		"project": "go.opentelemetry.io/otel/metric",
 		"licenses": [
 			{
 				"type": "Apache License 2.0",
@@ -621,7 +657,16 @@
 		]
 	},
 	{
-		"project": "golang.org/x/sys",
+		"project": "golang.org/x/sync/errgroup",
+		"licenses": [
+			{
+				"type": "BSD 3-clause \"New\" or \"Revised\" License",
+				"confidence": 0.9663865546218487
+			}
+		]
+	},
+	{
+		"project": "golang.org/x/sys/unix",
 		"licenses": [
 			{
 				"type": "BSD 3-clause \"New\" or \"Revised\" License",
@@ -671,15 +716,6 @@
 			{
 				"type": "BSD 3-clause \"New\" or \"Revised\" License",
 				"confidence": 0.9663865546218487
-			}
-		]
-	},
-	{
-		"project": "gopkg.in/cheggaaa/pb.v1",
-		"licenses": [
-			{
-				"type": "BSD 3-clause \"New\" or \"Revised\" License",
-				"confidence": 0.9916666666666667
 			}
 		]
 	},

@@ -21,7 +21,7 @@ import (
 	"errors"
 	"time"
 
-	jwt "github.com/golang-jwt/jwt"
+	jwt "github.com/golang-jwt/jwt/v4"
 	"go.uber.org/zap"
 )
 
@@ -42,7 +42,7 @@ func (t *tokenJWT) info(ctx context.Context, token string, rev uint64) (*AuthInf
 	// rev isn't used in JWT, it is only used in simple token
 	var (
 		username string
-		revision uint64
+		revision float64
 	)
 
 	parsed, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
@@ -62,7 +62,6 @@ func (t *tokenJWT) info(ctx context.Context, token string, rev uint64) (*AuthInf
 	if err != nil {
 		t.lg.Warn(
 			"failed to parse a JWT token",
-			zap.String("token", token),
 			zap.Error(err),
 		)
 		return nil, false
@@ -70,14 +69,23 @@ func (t *tokenJWT) info(ctx context.Context, token string, rev uint64) (*AuthInf
 
 	claims, ok := parsed.Claims.(jwt.MapClaims)
 	if !parsed.Valid || !ok {
-		t.lg.Warn("invalid JWT token", zap.String("token", token))
+		t.lg.Warn("failed to obtain claims from a JWT token")
 		return nil, false
 	}
 
-	username = claims["username"].(string)
-	revision = uint64(claims["revision"].(float64))
+	username, ok = claims["username"].(string)
+	if !ok {
+		t.lg.Warn("failed to obtain user claims from jwt token")
+		return nil, false
+	}
 
-	return &AuthInfo{Username: username, Revision: revision}, true
+	revision, ok = claims["revision"].(float64)
+	if !ok {
+		t.lg.Warn("failed to obtain revision claims from jwt token")
+		return nil, false
+	}
+
+	return &AuthInfo{Username: username, Revision: uint64(revision)}, true
 }
 
 func (t *tokenJWT) assign(ctx context.Context, username string, revision uint64) (string, error) {

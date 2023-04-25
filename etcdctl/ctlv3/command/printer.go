@@ -50,6 +50,10 @@ type printer interface {
 	EndpointHashKV([]epHashKV)
 	MoveLeader(leader, target uint64, r v3.MoveLeaderResponse)
 
+	DowngradeValidate(r v3.DowngradeResponse)
+	DowngradeEnable(r v3.DowngradeResponse)
+	DowngradeCancel(r v3.DowngradeResponse)
+
 	Alarm(v3.AlarmResponse)
 
 	RoleAdd(role string, r v3.AuthRoleAddResponse)
@@ -75,7 +79,7 @@ func NewPrinter(printerType string, isHex bool) printer {
 	case "simple":
 		return &simplePrinter{isHex: isHex}
 	case "fields":
-		return &fieldsPrinter{newPrinterUnsupported("fields")}
+		return &fieldsPrinter{printer: newPrinterUnsupported("fields"), isHex: isHex}
 	case "json":
 		return newJSONPrinter(isHex)
 	case "protobuf":
@@ -110,11 +114,17 @@ func (p *printerRPC) MemberRemove(id uint64, r v3.MemberRemoveResponse) {
 func (p *printerRPC) MemberUpdate(id uint64, r v3.MemberUpdateResponse) {
 	p.p((*pb.MemberUpdateResponse)(&r))
 }
+func (p *printerRPC) MemberPromote(id uint64, r v3.MemberPromoteResponse) {
+	p.p((*pb.MemberPromoteResponse)(&r))
+}
 func (p *printerRPC) MemberList(r v3.MemberListResponse) { p.p((*pb.MemberListResponse)(&r)) }
 func (p *printerRPC) Alarm(r v3.AlarmResponse)           { p.p((*pb.AlarmResponse)(&r)) }
 func (p *printerRPC) MoveLeader(leader, target uint64, r v3.MoveLeaderResponse) {
 	p.p((*pb.MoveLeaderResponse)(&r))
 }
+func (p *printerRPC) DowngradeValidate(r v3.DowngradeResponse)   { p.p((*pb.DowngradeResponse)(&r)) }
+func (p *printerRPC) DowngradeEnable(r v3.DowngradeResponse)     { p.p((*pb.DowngradeResponse)(&r)) }
+func (p *printerRPC) DowngradeCancel(r v3.DowngradeResponse)     { p.p((*pb.DowngradeResponse)(&r)) }
 func (p *printerRPC) RoleAdd(_ string, r v3.AuthRoleAddResponse) { p.p((*pb.AuthRoleAddResponse)(&r)) }
 func (p *printerRPC) RoleGet(_ string, r v3.AuthRoleGetResponse) { p.p((*pb.AuthRoleGetResponse)(&r)) }
 func (p *printerRPC) RoleDelete(_ string, r v3.AuthRoleDeleteResponse) {
@@ -160,6 +170,9 @@ func (p *printerUnsupported) EndpointStatus([]epStatus) { p.p(nil) }
 func (p *printerUnsupported) EndpointHashKV([]epHashKV) { p.p(nil) }
 
 func (p *printerUnsupported) MoveLeader(leader, target uint64, r v3.MoveLeaderResponse) { p.p(nil) }
+func (p *printerUnsupported) DowngradeValidate(r v3.DowngradeResponse)                  { p.p(nil) }
+func (p *printerUnsupported) DowngradeEnable(r v3.DowngradeResponse)                    { p.p(nil) }
+func (p *printerUnsupported) DowngradeCancel(r v3.DowngradeResponse)                    { p.p(nil) }
 
 func makeMemberListTable(r v3.MemberListResponse) (hdr []string, rows [][]string) {
 	hdr = []string{"ID", "Status", "Name", "Peer Addrs", "Client Addrs", "Is Learner"}
@@ -198,14 +211,16 @@ func makeEndpointHealthTable(healthList []epHealth) (hdr []string, rows [][]stri
 }
 
 func makeEndpointStatusTable(statusList []epStatus) (hdr []string, rows [][]string) {
-	hdr = []string{"endpoint", "ID", "version", "db size", "is leader", "is learner", "raft term",
+	hdr = []string{"endpoint", "ID", "version", "storage version", "db size", "db size in use", "is leader", "is learner", "raft term",
 		"raft index", "raft applied index", "errors"}
 	for _, status := range statusList {
 		rows = append(rows, []string{
 			status.Ep,
 			fmt.Sprintf("%x", status.Resp.Header.MemberId),
 			status.Resp.Version,
+			status.Resp.StorageVersion,
 			humanize.Bytes(uint64(status.Resp.DbSize)),
+			humanize.Bytes(uint64(status.Resp.DbSizeInUse)),
 			fmt.Sprint(status.Resp.Leader == status.Resp.Header.MemberId),
 			fmt.Sprint(status.Resp.IsLearner),
 			fmt.Sprint(status.Resp.RaftTerm),
@@ -218,11 +233,12 @@ func makeEndpointStatusTable(statusList []epStatus) (hdr []string, rows [][]stri
 }
 
 func makeEndpointHashKVTable(hashList []epHashKV) (hdr []string, rows [][]string) {
-	hdr = []string{"endpoint", "hash"}
+	hdr = []string{"endpoint", "hash", "hash_revision"}
 	for _, h := range hashList {
 		rows = append(rows, []string{
 			h.Ep,
 			fmt.Sprint(h.Resp.Hash),
+			fmt.Sprint(h.Resp.HashRevision),
 		})
 	}
 	return hdr, rows

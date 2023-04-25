@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build !cluster_proxy
-// +build !cluster_proxy
 
 // Keep the test in a separate package from other tests such that
 // .setupLogging method does not race with other (previously running) servers (grpclog is global).
@@ -32,16 +31,17 @@ import (
 
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
+	"go.etcd.io/etcd/tests/v3/framework/testutils"
 )
 
 var (
 	testTLSInfo = transport.TLSInfo{
-		KeyFile:        integration2.MustAbsPath("../../fixtures/server.key.insecure"),
-		CertFile:       integration2.MustAbsPath("../../fixtures/server.crt"),
-		TrustedCAFile:  integration2.MustAbsPath("../../fixtures/ca.crt"),
+		KeyFile:        testutils.MustAbsPath("../../fixtures/server.key.insecure"),
+		CertFile:       testutils.MustAbsPath("../../fixtures/server.crt"),
+		TrustedCAFile:  testutils.MustAbsPath("../../fixtures/ca.crt"),
 		ClientCertAuth: true,
 	}
 )
@@ -78,7 +78,7 @@ func TestEmbedEtcd(t *testing.T) {
 
 	tests[0].cfg.Durl = "abc"
 	setupEmbedCfg(&tests[1].cfg, []url.URL{urls[0]}, []url.URL{urls[1]})
-	tests[1].cfg.ACUrls = nil
+	tests[1].cfg.AdvertiseClientUrls = nil
 	tests[2].cfg.TickMs = tests[2].cfg.ElectionMs - 1
 	tests[3].cfg.ElectionMs = 999999
 	setupEmbedCfg(&tests[4].cfg, []url.URL{urls[2]}, []url.URL{urls[3]})
@@ -86,10 +86,10 @@ func TestEmbedEtcd(t *testing.T) {
 	setupEmbedCfg(&tests[6].cfg, []url.URL{urls[7], urls[8]}, []url.URL{urls[9]})
 
 	dnsURL, _ := url.Parse("http://whatever.test:12345")
-	tests[7].cfg.LCUrls = []url.URL{*dnsURL}
-	tests[8].cfg.LPUrls = []url.URL{*dnsURL}
+	tests[7].cfg.ListenClientUrls = []url.URL{*dnsURL}
+	tests[8].cfg.ListenPeerUrls = []url.URL{*dnsURL}
 
-	dir := filepath.Join(t.TempDir(), fmt.Sprintf("embed-etcd"))
+	dir := filepath.Join(t.TempDir(), "embed-etcd")
 
 	for i, tt := range tests {
 		tests[i].cfg.Dir = dir
@@ -143,7 +143,7 @@ func testEmbedEtcdGracefulStop(t *testing.T, secure bool) {
 	urls := newEmbedURLs(secure, 2)
 	setupEmbedCfg(cfg, []url.URL{urls[0]}, []url.URL{urls[1]})
 
-	cfg.Dir = filepath.Join(t.TempDir(), fmt.Sprintf("embed-etcd"))
+	cfg.Dir = filepath.Join(t.TempDir(), "embed-etcd")
 
 	e, err := embed.StartEtcd(cfg)
 	if err != nil {
@@ -202,8 +202,8 @@ func setupEmbedCfg(cfg *embed.Config, curls []url.URL, purls []url.URL) {
 	cfg.LogOutputs = []string{"/dev/null"}
 
 	cfg.ClusterState = "new"
-	cfg.LCUrls, cfg.ACUrls = curls, curls
-	cfg.LPUrls, cfg.APUrls = purls, purls
+	cfg.ListenClientUrls, cfg.AdvertiseClientUrls = curls, curls
+	cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = purls, purls
 	cfg.InitialCluster = ""
 	for i := range purls {
 		cfg.InitialCluster += ",default=" + purls[i].String()

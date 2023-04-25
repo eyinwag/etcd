@@ -22,7 +22,8 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	v3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/pkg/v3/cobrautl"
 	"go.etcd.io/etcd/pkg/v3/flags"
 
@@ -88,7 +89,7 @@ type epHealth struct {
 
 // epHealthCommandFunc executes the "endpoint-health" command.
 func epHealthCommandFunc(cmd *cobra.Command, args []string) {
-	lg, err := zap.NewProduction()
+	lg, err := logutil.CreateDefaultZapLogger(zap.InfoLevel)
 	if err != nil {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
@@ -100,9 +101,16 @@ func epHealthCommandFunc(cmd *cobra.Command, args []string) {
 	ka := keepAliveTimeFromCmd(cmd)
 	kat := keepAliveTimeoutFromCmd(cmd)
 	auth := authCfgFromCmd(cmd)
-	cfgs := []*v3.Config{}
+	var cfgs []*clientv3.Config
 	for _, ep := range endpointsFromCluster(cmd) {
-		cfg, err := newClientCfg([]string{ep}, dt, ka, kat, sec, auth)
+		cfg, err := clientv3.NewClientConfig(&clientv3.ConfigSpec{
+			Endpoints:        []string{ep},
+			DialTimeout:      dt,
+			KeepAliveTime:    ka,
+			KeepAliveTimeout: kat,
+			Secure:           sec,
+			Auth:             auth,
+		}, lg)
 		if err != nil {
 			cobrautl.ExitWithError(cobrautl.ExitBadArgs, err)
 		}
@@ -113,11 +121,11 @@ func epHealthCommandFunc(cmd *cobra.Command, args []string) {
 	hch := make(chan epHealth, len(cfgs))
 	for _, cfg := range cfgs {
 		wg.Add(1)
-		go func(cfg *v3.Config) {
+		go func(cfg *clientv3.Config) {
 			defer wg.Done()
 			ep := cfg.Endpoints[0]
 			cfg.Logger = lg.Named("client")
-			cli, err := v3.New(*cfg)
+			cli, err := clientv3.New(*cfg)
 			if err != nil {
 				hch <- epHealth{Ep: ep, Health: false, Error: err.Error()}
 				return
@@ -164,7 +172,7 @@ func epHealthCommandFunc(cmd *cobra.Command, args []string) {
 	close(hch)
 
 	errs := false
-	healthList := []epHealth{}
+	var healthList []epHealth
 	for h := range hch {
 		healthList = append(healthList, h)
 		if h.Error != "" {
@@ -178,19 +186,22 @@ func epHealthCommandFunc(cmd *cobra.Command, args []string) {
 }
 
 type epStatus struct {
-	Ep   string             `json:"Endpoint"`
-	Resp *v3.StatusResponse `json:"Status"`
+	Ep   string                   `json:"Endpoint"`
+	Resp *clientv3.StatusResponse `json:"Status"`
 }
 
 func epStatusCommandFunc(cmd *cobra.Command, args []string) {
-	c := mustClientFromCmd(cmd)
+	cfg := clientConfigFromCmd(cmd)
 
-	statusList := []epStatus{}
+	var statusList []epStatus
 	var err error
 	for _, ep := range endpointsFromCluster(cmd) {
+		cfg.Endpoints = []string{ep}
+		c := mustClient(cfg)
 		ctx, cancel := commandCtx(cmd)
 		resp, serr := c.Status(ctx, ep)
 		cancel()
+		c.Close()
 		if serr != nil {
 			err = serr
 			fmt.Fprintf(os.Stderr, "Failed to get the status of endpoint %s (%v)\n", ep, serr)
@@ -207,19 +218,22 @@ func epStatusCommandFunc(cmd *cobra.Command, args []string) {
 }
 
 type epHashKV struct {
-	Ep   string             `json:"Endpoint"`
-	Resp *v3.HashKVResponse `json:"HashKV"`
+	Ep   string                   `json:"Endpoint"`
+	Resp *clientv3.HashKVResponse `json:"HashKV"`
 }
 
 func epHashKVCommandFunc(cmd *cobra.Command, args []string) {
-	c := mustClientFromCmd(cmd)
+	cfg := clientConfigFromCmd(cmd)
 
-	hashList := []epHashKV{}
+	var hashList []epHashKV
 	var err error
 	for _, ep := range endpointsFromCluster(cmd) {
+		cfg.Endpoints = []string{ep}
+		c := mustClient(cfg)
 		ctx, cancel := commandCtx(cmd)
 		resp, serr := c.HashKV(ctx, ep, epHashKVRev)
 		cancel()
+		c.Close()
 		if serr != nil {
 			err = serr
 			fmt.Fprintf(os.Stderr, "Failed to get the hash of endpoint %s (%v)\n", ep, serr)
@@ -253,12 +267,18 @@ func endpointsFromCluster(cmd *cobra.Command) []string {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 	// exclude auth for not asking needless password (MemberList() doesn't need authentication)
-
-	cfg, err := newClientCfg(eps, dt, ka, kat, sec, nil)
+	lg, _ := logutil.CreateDefaultZapLogger(zap.InfoLevel)
+	cfg, err := clientv3.NewClientConfig(&clientv3.ConfigSpec{
+		Endpoints:        eps,
+		DialTimeout:      dt,
+		KeepAliveTime:    ka,
+		KeepAliveTimeout: kat,
+		Secure:           sec,
+	}, lg)
 	if err != nil {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
-	c, err := v3.New(*cfg)
+	c, err := clientv3.New(*cfg)
 	if err != nil {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
@@ -274,7 +294,7 @@ func endpointsFromCluster(cmd *cobra.Command) []string {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)
 	}
 
-	ret := []string{}
+	var ret []string
 	for _, m := range membs.Members {
 		ret = append(ret, m.ClientURLs...)
 	}

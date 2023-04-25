@@ -21,12 +21,13 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/pkg/v3/idutil"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
@@ -36,9 +37,9 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
 	"go.etcd.io/etcd/server/v3/verify"
+	"go.etcd.io/raft/v3/raftpb"
 
 	bolt "go.etcd.io/bbolt"
-	"go.uber.org/zap"
 )
 
 var (
@@ -61,7 +62,7 @@ func NewBackupCommand() *cobra.Command {
 	cmd.Flags().StringVar(&walDir, "wal-dir", "", "Path to the etcd wal dir")
 	cmd.Flags().StringVar(&backupDir, "backup-dir", "", "Path to the backup dir")
 	cmd.Flags().StringVar(&backupWalDir, "backup-wal-dir", "", "Path to the backup wal dir")
-	cmd.Flags().BoolVar(&withV3, "with-v3", true, "Backup v3 backend data")
+	cmd.Flags().BoolVar(&withV3, "with-v3", true, "Backup v3 backend data. Note -with-v3=false is not supported since etcd v3.6. Please use v3.5.x client as the last supporting this deprecated functionality.")
 	cmd.MarkFlagRequired("data-dir")
 	cmd.MarkFlagRequired("backup-dir")
 	cmd.MarkFlagDirname("data-dir")
@@ -107,6 +108,11 @@ func newDesiredCluster() desiredCluster {
 func HandleBackup(withV3 bool, srcDir string, destDir string, srcWAL string, destWAL string) error {
 	lg := GetLogger()
 
+	if !withV3 {
+		lg.Warn("-with-v3=false is not supported since etcd v3.6. Please use v3.5.x client as the last supporting this deprecated functionality.")
+		return nil
+	}
+
 	srcSnap := datadir.ToSnapDir(srcDir)
 	destSnap := datadir.ToSnapDir(destDir)
 
@@ -127,8 +133,8 @@ func HandleBackup(withV3 bool, srcDir string, destDir string, srcWAL string, des
 	desired := newDesiredCluster()
 
 	walsnap := saveSnap(lg, destSnap, srcSnap, &desired)
-	metadata, state, ents := translateWAL(lg, srcWAL, walsnap, withV3)
-	saveDB(lg, destDbPath, srcDbPath, state.Commit, state.Term, &desired, withV3)
+	metadata, state, ents := translateWAL(lg, srcWAL, walsnap)
+	saveDB(lg, destDbPath, srcDbPath, state.Commit, state.Term, &desired)
 
 	neww, err := wal.Create(lg, destWAL, pbutil.MustMarshal(&metadata))
 	if err != nil {
@@ -189,7 +195,7 @@ func mustTranslateV2store(lg *zap.Logger, storeData []byte, desired *desiredClus
 	return outputData
 }
 
-func translateWAL(lg *zap.Logger, srcWAL string, walsnap walpb.Snapshot, v3 bool) (etcdserverpb.Metadata, raftpb.HardState, []raftpb.Entry) {
+func translateWAL(lg *zap.Logger, srcWAL string, walsnap walpb.Snapshot) (etcdserverpb.Metadata, raftpb.HardState, []raftpb.Entry) {
 	w, err := wal.OpenForRead(lg, srcWAL, walsnap)
 	if err != nil {
 		lg.Fatal("wal.OpenForRead failed", zap.Error(err))
@@ -239,22 +245,13 @@ func translateWAL(lg *zap.Logger, srcWAL string, walsnap walpb.Snapshot, v3 bool
 			continue
 		}
 
-		if v2Req != nil {
-			lg.Debug("preserving log entry", zap.Stringer("entry", &ents[i]))
-		}
-
 		if raftReq.ClusterMemberAttrSet != nil {
 			lg.Info("ignoring cluster_member_attr_set")
 			raftEntryToNoOp(&ents[i])
 			continue
 		}
 
-		if v3 || raftReq.Header == nil {
-			lg.Debug("preserving log entry", zap.Stringer("entry", &ents[i]))
-			continue
-		}
-		lg.Info("ignoring v3 raft entry")
-		raftEntryToNoOp(&ents[i])
+		lg.Debug("preserving log entry", zap.Stringer("entry", &ents[i]))
 	}
 	var metadata etcdserverpb.Metadata
 	pbutil.MustUnmarshal(&metadata, wmetadata)
@@ -269,47 +266,44 @@ func raftEntryToNoOp(entry *raftpb.Entry) {
 }
 
 // saveDB copies the v3 backend and strips cluster information.
-func saveDB(lg *zap.Logger, destDB, srcDB string, idx uint64, term uint64, desired *desiredCluster, v3 bool) {
-
+func saveDB(lg *zap.Logger, destDB, srcDB string, idx uint64, term uint64, desired *desiredCluster) {
 	// open src db to safely copy db state
-	if v3 {
-		var src *bolt.DB
-		ch := make(chan *bolt.DB, 1)
-		go func() {
-			db, err := bolt.Open(srcDB, 0444, &bolt.Options{ReadOnly: true})
-			if err != nil {
-				lg.Fatal("bolt.Open FAILED", zap.Error(err))
-			}
-			ch <- db
-		}()
-		select {
-		case src = <-ch:
-		case <-time.After(time.Second):
-			lg.Fatal("timed out waiting to acquire lock on", zap.String("srcDB", srcDB))
-			src = <-ch
-		}
-		defer src.Close()
-
-		tx, err := src.Begin(false)
+	var src *bolt.DB
+	ch := make(chan *bolt.DB, 1)
+	go func() {
+		db, err := bolt.Open(srcDB, 0444, &bolt.Options{ReadOnly: true})
 		if err != nil {
-			lg.Fatal("bbolt.BeginTx failed", zap.Error(err))
+			lg.Fatal("bolt.Open FAILED", zap.Error(err))
 		}
+		ch <- db
+	}()
+	select {
+	case src = <-ch:
+	case <-time.After(time.Second):
+		lg.Fatal("timed out waiting to acquire lock on", zap.String("srcDB", srcDB))
+	}
+	defer src.Close()
 
-		// copy srcDB to destDB
-		dest, err := os.Create(destDB)
-		if err != nil {
-			lg.Fatal("creation of destination file failed", zap.String("dest", destDB), zap.Error(err))
-		}
-		if _, err := tx.WriteTo(dest); err != nil {
-			lg.Fatal("bbolt write to destination file failed", zap.String("dest", destDB), zap.Error(err))
-		}
-		dest.Close()
-		if err := tx.Rollback(); err != nil {
-			lg.Fatal("bbolt tx.Rollback failed", zap.String("dest", destDB), zap.Error(err))
-		}
+	tx, err := src.Begin(false)
+	if err != nil {
+		lg.Fatal("bbolt.BeginTx failed", zap.Error(err))
 	}
 
-	be := backend.NewDefaultBackend(destDB)
+	// copy srcDB to destDB
+	dest, err := os.Create(destDB)
+	if err != nil {
+		lg.Fatal("creation of destination file failed", zap.String("dest", destDB), zap.Error(err))
+	}
+	if _, err := tx.WriteTo(dest); err != nil {
+		lg.Fatal("bbolt write to destination file failed", zap.String("dest", destDB), zap.Error(err))
+	}
+	dest.Close()
+	if err := tx.Rollback(); err != nil {
+		lg.Fatal("bbolt tx.Rollback failed", zap.String("dest", destDB), zap.Error(err))
+	}
+
+	// trim membership info
+	be := backend.NewDefaultBackend(lg, destDB)
 	defer be.Close()
 	ms := schema.NewMembershipBackend(lg, be)
 	if err := ms.TrimClusterFromBackend(); err != nil {
@@ -320,16 +314,4 @@ func saveDB(lg *zap.Logger, destDB, srcDB string, idx uint64, term uint64, desir
 	raftCluster.SetID(desired.nodeId, desired.clusterId)
 	raftCluster.SetBackend(ms)
 	raftCluster.PushMembershipToStorage()
-
-	if !v3 {
-		tx := be.BatchTx()
-		tx.Lock()
-		defer tx.Unlock()
-		schema.UnsafeCreateMetaBucket(tx)
-		schema.UnsafeUpdateConsistentIndex(tx, idx, term, false)
-	} else {
-		// Thanks to translateWAL not moving entries, but just replacing them with
-		// 'empty', there is no need to update the consistency index.
-	}
-
 }

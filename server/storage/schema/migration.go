@@ -18,8 +18,10 @@ import (
 	"fmt"
 
 	"github.com/coreos/go-semver/semver"
-	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/api/v3/version"
+	"go.etcd.io/etcd/server/v3/storage/backend"
 )
 
 type migrationPlan []migrationStep
@@ -49,7 +51,7 @@ func newPlan(lg *zap.Logger, current semver.Version, target semver.Version) (pla
 }
 
 func (p migrationPlan) Execute(lg *zap.Logger, tx backend.BatchTx) error {
-	tx.Lock()
+	tx.LockOutsideApply()
 	defer tx.Unlock()
 	return p.unsafeExecute(lg, tx)
 }
@@ -60,7 +62,7 @@ func (p migrationPlan) unsafeExecute(lg *zap.Logger, tx backend.BatchTx) (err er
 		if err != nil {
 			return err
 		}
-		lg.Info("upgraded storage version", zap.String("new-storage-version", s.target.String()))
+		lg.Info("updated storage version", zap.String("new-storage-version", s.target.String()))
 	}
 	return nil
 }
@@ -90,7 +92,7 @@ func newMigrationStep(v semver.Version, isUpgrade bool, changes []schemaChange) 
 
 // execute runs actions required to migrate etcd storage between two minor versions.
 func (s migrationStep) execute(lg *zap.Logger, tx backend.BatchTx) error {
-	tx.Lock()
+	tx.LockOutsideApply()
 	defer tx.Unlock()
 	return s.unsafeExecute(lg, tx)
 }
@@ -102,7 +104,7 @@ func (s migrationStep) unsafeExecute(lg *zap.Logger, tx backend.BatchTx) error {
 		return err
 	}
 	// Storage version is available since v3.6, downgrading target v3.5 should clean this field.
-	if !s.target.LessThan(V3_6) {
+	if !s.target.LessThan(version.V3_6) {
 		UnsafeSetStorageVersion(tx, &s.target)
 	}
 	return nil

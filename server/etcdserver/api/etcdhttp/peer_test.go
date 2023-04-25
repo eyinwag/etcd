@@ -26,9 +26,10 @@ import (
 	"strings"
 	"testing"
 
-	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/coreos/go-semver/semver"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
@@ -46,12 +47,12 @@ type fakeCluster struct {
 func (c *fakeCluster) ID() types.ID         { return types.ID(c.id) }
 func (c *fakeCluster) ClientURLs() []string { return c.clientURLs }
 func (c *fakeCluster) Members() []*membership.Member {
-	var ms membership.MembersByID
+	ms := make(membership.MembersByID, 0, len(c.members))
 	for _, m := range c.members {
 		ms = append(ms, m)
 	}
 	sort.Sort(ms)
-	return []*membership.Member(ms)
+	return ms
 }
 func (c *fakeCluster) Member(id types.ID) *membership.Member { return c.members[uint64(id)] }
 func (c *fakeCluster) Version() *semver.Version              { return nil }
@@ -74,6 +75,7 @@ func (s *fakeServer) PromoteMember(ctx context.Context, id uint64) ([]*membershi
 	return nil, fmt.Errorf("PromoteMember not implemented in fakeServer")
 }
 func (s *fakeServer) ClusterVersion() *semver.Version      { return nil }
+func (s *fakeServer) StorageVersion() *semver.Version      { return nil }
 func (s *fakeServer) Cluster() api.Cluster                 { return s.cluster }
 func (s *fakeServer) Alarms() []*pb.AlarmMember            { return s.alarms }
 func (s *fakeServer) LeaderChangedNotify() <-chan struct{} { return nil }
@@ -85,7 +87,7 @@ var fakeRaftHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Reque
 // TestNewPeerHandlerOnRaftPrefix tests that NewPeerHandler returns a handler that
 // handles raft-prefix requests well.
 func TestNewPeerHandlerOnRaftPrefix(t *testing.T) {
-	ph := newPeerHandler(zap.NewExample(), &fakeServer{cluster: &fakeCluster{}}, fakeRaftHandler, nil, nil, nil)
+	ph := newPeerHandler(zaptest.NewLogger(t), &fakeServer{cluster: &fakeCluster{}}, fakeRaftHandler, nil, nil, nil)
 	srv := httptest.NewServer(ph)
 	defer srv.Close()
 
@@ -233,7 +235,7 @@ func TestServeMemberPromoteFails(t *testing.T) {
 
 // TestNewPeerHandlerOnMembersPromotePrefix verifies the request with members promote prefix is routed correctly
 func TestNewPeerHandlerOnMembersPromotePrefix(t *testing.T) {
-	ph := newPeerHandler(zap.NewExample(), &fakeServer{cluster: &fakeCluster{}}, fakeRaftHandler, nil, nil, nil)
+	ph := newPeerHandler(zaptest.NewLogger(t), &fakeServer{cluster: &fakeCluster{}}, fakeRaftHandler, nil, nil, nil)
 	srv := httptest.NewServer(ph)
 	defer srv.Close()
 

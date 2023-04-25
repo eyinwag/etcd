@@ -18,50 +18,21 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"syscall"
 	"testing"
 	"time"
 
-	"go.etcd.io/etcd/client/v3"
+	"github.com/stretchr/testify/require"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
-func TestCtlV3AuthEnable(t *testing.T) {
-	testCtl(t, authEnableTest)
-}
-func TestCtlV3AuthDisable(t *testing.T)             { testCtl(t, authDisableTest) }
-func TestCtlV3AuthStatus(t *testing.T)              { testCtl(t, authStatusTest) }
-func TestCtlV3AuthWriteKey(t *testing.T)            { testCtl(t, authCredWriteKeyTest) }
-func TestCtlV3AuthRoleUpdate(t *testing.T)          { testCtl(t, authRoleUpdateTest) }
-func TestCtlV3AuthUserDeleteDuringOps(t *testing.T) { testCtl(t, authUserDeleteDuringOpsTest) }
-func TestCtlV3AuthRoleRevokeDuringOps(t *testing.T) { testCtl(t, authRoleRevokeDuringOpsTest) }
-func TestCtlV3AuthTxn(t *testing.T)                 { testCtl(t, authTestTxn) }
-func TestCtlV3AuthTxnJWT(t *testing.T)              { testCtl(t, authTestTxn, withCfg(*e2e.NewConfigJWT())) }
-func TestCtlV3AuthPrefixPerm(t *testing.T)          { testCtl(t, authTestPrefixPerm) }
-func TestCtlV3AuthMemberAdd(t *testing.T)           { testCtl(t, authTestMemberAdd) }
-func TestCtlV3AuthMemberRemove(t *testing.T) {
-	testCtl(t, authTestMemberRemove, withQuorum(), withNoStrictReconfig())
-}
-func TestCtlV3AuthMemberUpdate(t *testing.T)     { testCtl(t, authTestMemberUpdate) }
-func TestCtlV3AuthRevokeWithDelete(t *testing.T) { testCtl(t, authTestRevokeWithDelete) }
-func TestCtlV3AuthInvalidMgmt(t *testing.T)      { testCtl(t, authTestInvalidMgmt) }
-func TestCtlV3AuthFromKeyPerm(t *testing.T)      { testCtl(t, authTestFromKeyPerm) }
-func TestCtlV3AuthAndWatch(t *testing.T)         { testCtl(t, authTestWatch) }
-func TestCtlV3AuthAndWatchJWT(t *testing.T)      { testCtl(t, authTestWatch, withCfg(*e2e.NewConfigJWT())) }
+func TestCtlV3AuthMemberUpdate(t *testing.T) { testCtl(t, authTestMemberUpdate) }
+func TestCtlV3AuthFromKeyPerm(t *testing.T)  { testCtl(t, authTestFromKeyPerm) }
 
-func TestCtlV3AuthLeaseTestKeepAlive(t *testing.T) { testCtl(t, authLeaseTestKeepAlive) }
-func TestCtlV3AuthLeaseTestTimeToLiveExpired(t *testing.T) {
-	testCtl(t, authLeaseTestTimeToLiveExpired)
-}
-func TestCtlV3AuthLeaseGrantLeases(t *testing.T) { testCtl(t, authLeaseTestLeaseGrantLeases) }
-func TestCtlV3AuthLeaseGrantLeasesJWT(t *testing.T) {
-	testCtl(t, authLeaseTestLeaseGrantLeases, withCfg(*e2e.NewConfigJWT()))
-}
-func TestCtlV3AuthLeaseRevoke(t *testing.T) { testCtl(t, authLeaseTestLeaseRevoke) }
-
-func TestCtlV3AuthRoleGet(t *testing.T)  { testCtl(t, authTestRoleGet) }
-func TestCtlV3AuthUserGet(t *testing.T)  { testCtl(t, authTestUserGet) }
-func TestCtlV3AuthRoleList(t *testing.T) { testCtl(t, authTestRoleList) }
+// TestCtlV3AuthAndWatch TODO https://github.com/etcd-io/etcd/issues/7988 is the blocker of migration to common/auth_test.go
+func TestCtlV3AuthAndWatch(t *testing.T)    { testCtl(t, authTestWatch) }
+func TestCtlV3AuthAndWatchJWT(t *testing.T) { testCtl(t, authTestWatch, withCfg(*e2e.NewConfigJWT())) }
 
 func TestCtlV3AuthDefrag(t *testing.T) { testCtl(t, authTestDefrag) }
 func TestCtlV3AuthEndpointHealth(t *testing.T) {
@@ -75,12 +46,7 @@ func TestCtlV3AuthJWTExpire(t *testing.T) {
 	testCtl(t, authTestJWTExpire, withCfg(*e2e.NewConfigJWT()))
 }
 func TestCtlV3AuthRevisionConsistency(t *testing.T) { testCtl(t, authTestRevisionConsistency) }
-
-func authEnableTest(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-}
+func TestCtlV3AuthTestCacheReload(t *testing.T)     { testCtl(t, authTestCacheReload) }
 
 func authEnable(cx ctlCtx) error {
 	// create root user with root role
@@ -99,294 +65,6 @@ func authEnable(cx ctlCtx) error {
 func ctlV3AuthEnable(cx ctlCtx) error {
 	cmdArgs := append(cx.PrefixArgs(), "auth", "enable")
 	return e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, "Authentication Enabled")
-}
-
-func authDisableTest(cx ctlCtx) {
-	// a key that isn't granted to test-user
-	if err := ctlV3Put(cx, "hoo", "a", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// test-user doesn't have the permission, it must fail
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3PutFailPerm(cx, "hoo", "bar"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3AuthDisable(cx); err != nil {
-		cx.t.Fatalf("authDisableTest ctlV3AuthDisable error (%v)", err)
-	}
-
-	// now ErrAuthNotEnabled of Authenticate() is simply ignored
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "hoo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// now the key can be accessed
-	cx.user, cx.pass = "", ""
-	if err := ctlV3Put(cx, "hoo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"hoo"}, []kv{{"hoo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func ctlV3AuthDisable(cx ctlCtx) error {
-	cmdArgs := append(cx.PrefixArgs(), "auth", "disable")
-	return e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, "Authentication Disabled")
-}
-
-func authStatusTest(cx ctlCtx) {
-	cmdArgs := append(cx.PrefixArgs(), "auth", "status")
-	if err := e2e.SpawnWithExpects(cmdArgs, cx.envMap, "Authentication Status: false", "AuthRevision:"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	cmdArgs = append(cx.PrefixArgs(), "auth", "status")
-
-	if err := e2e.SpawnWithExpects(cmdArgs, cx.envMap, "Authentication Status: true", "AuthRevision:"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cmdArgs = append(cx.PrefixArgs(), "auth", "status", "--write-out", "json")
-	if err := e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, "enabled"); err != nil {
-		cx.t.Fatal(err)
-	}
-	if err := e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, "authRevision"); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authCredWriteKeyTest(cx ctlCtx) {
-	// baseline key to check for failed puts
-	if err := ctlV3Put(cx, "foo", "a", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// confirm root role can access to all keys
-	if err := ctlV3Put(cx, "foo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try invalid user
-	cx.user, cx.pass = "a", "b"
-	if err := ctlV3PutFailAuth(cx, "foo", "bar"); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put failed
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try good user
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "foo", "bar2", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar2"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try bad password
-	cx.user, cx.pass = "test-user", "badpass"
-	if err := ctlV3PutFailAuth(cx, "foo", "baz"); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put failed
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar2"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authRoleUpdateTest(cx ctlCtx) {
-	if err := ctlV3Put(cx, "foo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// try put to not granted key
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3PutFailPerm(cx, "hoo", "bar"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// grant a new key
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3RoleGrantPermission(cx, "test-role", grantingPerm{true, true, "hoo", "", false}); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try a newly granted key
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "hoo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"hoo"}, []kv{{"hoo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// revoke the newly granted key
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3RoleRevokePermission(cx, "test-role", "hoo", "", false); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try put to the revoked key
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3PutFailPerm(cx, "hoo", "bar"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// confirm a key still granted can be accessed
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authUserDeleteDuringOpsTest(cx ctlCtx) {
-	if err := ctlV3Put(cx, "foo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// create a key
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "foo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// delete the user
-	cx.user, cx.pass = "root", "root"
-	err := ctlV3User(cx, []string{"delete", "test-user"}, "User test-user deleted", []string{})
-	if err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// check the user is deleted
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3PutFailAuth(cx, "foo", "baz"); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authRoleRevokeDuringOpsTest(cx ctlCtx) {
-	if err := ctlV3Put(cx, "foo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// create a key
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "foo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"foo"}, []kv{{"foo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// create a new role
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3Role(cx, []string{"add", "test-role2"}, "Role test-role2 created"); err != nil {
-		cx.t.Fatal(err)
-	}
-	// grant a new key to the new role
-	if err := ctlV3RoleGrantPermission(cx, "test-role2", grantingPerm{true, true, "hoo", "", false}); err != nil {
-		cx.t.Fatal(err)
-	}
-	// grant the new role to the user
-	if err := ctlV3User(cx, []string{"grant-role", "test-user", "test-role2"}, "Role test-role2 is granted to user test-user", nil); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try a newly granted key
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "hoo", "bar", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"hoo"}, []kv{{"hoo", "bar"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// revoke a role from the user
-	cx.user, cx.pass = "root", "root"
-	err := ctlV3User(cx, []string{"revoke-role", "test-user", "test-role"}, "Role test-role is revoked from user test-user", []string{})
-	if err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// check the role is revoked and permission is lost from the user
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3PutFailPerm(cx, "foo", "baz"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try a key that can be accessed from the remaining role
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3Put(cx, "hoo", "bar2", ""); err != nil {
-		cx.t.Fatal(err)
-	}
-	// confirm put succeeded
-	if err := ctlV3Get(cx, []string{"hoo"}, []kv{{"hoo", "bar2"}}...); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func ctlV3PutFailAuth(cx ctlCtx, key, val string) error {
-	return e2e.SpawnWithExpectWithEnv(append(cx.PrefixArgs(), "put", key, val), cx.envMap, "authentication failed")
 }
 
 func ctlV3PutFailPerm(cx ctlCtx, key, val string) error {
@@ -409,176 +87,6 @@ func authSetupTestUser(cx ctlCtx) {
 	}
 }
 
-func authTestTxn(cx ctlCtx) {
-	// keys with 1 suffix aren't granted to test-user
-	// keys with 2 suffix are granted to test-user
-
-	keys := []string{"c1", "s1", "f1"}
-	grantedKeys := []string{"c2", "s2", "f2"}
-	for _, key := range keys {
-		if err := ctlV3Put(cx, key, "v", ""); err != nil {
-			cx.t.Fatal(err)
-		}
-	}
-
-	for _, key := range grantedKeys {
-		if err := ctlV3Put(cx, key, "v", ""); err != nil {
-			cx.t.Fatal(err)
-		}
-	}
-
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// grant keys to test-user
-	cx.user, cx.pass = "root", "root"
-	for _, key := range grantedKeys {
-		if err := ctlV3RoleGrantPermission(cx, "test-role", grantingPerm{true, true, key, "", false}); err != nil {
-			cx.t.Fatal(err)
-		}
-	}
-
-	// now test txn
-	cx.interactive = true
-	cx.user, cx.pass = "test-user", "pass"
-
-	rqs := txnRequests{
-		compare:  []string{`version("c2") = "1"`},
-		ifSucess: []string{"get s2"},
-		ifFail:   []string{"get f2"},
-		results:  []string{"SUCCESS", "s2", "v"},
-	}
-	if err := ctlV3Txn(cx, rqs); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// a key of compare case isn't granted
-	rqs = txnRequests{
-		compare:  []string{`version("c1") = "1"`},
-		ifSucess: []string{"get s2"},
-		ifFail:   []string{"get f2"},
-		results:  []string{"Error: etcdserver: permission denied"},
-	}
-	if err := ctlV3Txn(cx, rqs); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// a key of success case isn't granted
-	rqs = txnRequests{
-		compare:  []string{`version("c2") = "1"`},
-		ifSucess: []string{"get s1"},
-		ifFail:   []string{"get f2"},
-		results:  []string{"Error: etcdserver: permission denied"},
-	}
-	if err := ctlV3Txn(cx, rqs); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// a key of failure case isn't granted
-	rqs = txnRequests{
-		compare:  []string{`version("c2") = "1"`},
-		ifSucess: []string{"get s2"},
-		ifFail:   []string{"get f1"},
-		results:  []string{"Error: etcdserver: permission denied"},
-	}
-	if err := ctlV3Txn(cx, rqs); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authTestPrefixPerm(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	prefix := "/prefix/" // directory like prefix
-	// grant keys to test-user
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3RoleGrantPermission(cx, "test-role", grantingPerm{true, true, prefix, "", true}); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// try a prefix granted permission
-	cx.user, cx.pass = "test-user", "pass"
-	for i := 0; i < 10; i++ {
-		key := fmt.Sprintf("%s%d", prefix, i)
-		if err := ctlV3Put(cx, key, "val", ""); err != nil {
-			cx.t.Fatal(err)
-		}
-	}
-
-	if err := ctlV3PutFailPerm(cx, clientv3.GetPrefixRangeEnd(prefix), "baz"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// grant the entire keys to test-user
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3RoleGrantPermission(cx, "test-role", grantingPerm{true, true, "", "", true}); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	prefix2 := "/prefix2/"
-	cx.user, cx.pass = "test-user", "pass"
-	for i := 0; i < 10; i++ {
-		key := fmt.Sprintf("%s%d", prefix2, i)
-		if err := ctlV3Put(cx, key, "val", ""); err != nil {
-			cx.t.Fatal(err)
-		}
-	}
-}
-
-func authTestMemberAdd(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	peerURL := fmt.Sprintf("http://localhost:%d", e2e.EtcdProcessBasePort+11)
-	// ordinary user cannot add a new member
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3MemberAdd(cx, peerURL, false); err == nil {
-		cx.t.Fatalf("ordinary user must not be allowed to add a member")
-	}
-
-	// root can add a new member
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3MemberAdd(cx, peerURL, false); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authTestMemberRemove(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	ep, memIDToRemove, clusterID := cx.memberToRemove()
-
-	// ordinary user cannot remove a member
-	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3MemberRemove(cx, ep, memIDToRemove, clusterID); err == nil {
-		cx.t.Fatalf("ordinary user must not be allowed to remove a member")
-	}
-
-	// root can remove a member
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3MemberRemove(cx, ep, memIDToRemove, clusterID); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
 func authTestMemberUpdate(cx ctlCtx) {
 	if err := authEnable(cx); err != nil {
 		cx.t.Fatal(err)
@@ -587,7 +95,7 @@ func authTestMemberUpdate(cx ctlCtx) {
 	cx.user, cx.pass = "root", "root"
 	authSetupTestUser(cx)
 
-	mr, err := getMemberList(cx)
+	mr, err := getMemberList(cx, false)
 	if err != nil {
 		cx.t.Fatal(err)
 	}
@@ -634,60 +142,10 @@ func authTestCertCN(cx ctlCtx) {
 		cx.t.Error(err)
 	}
 
-	// try a non granted key
+	// try a non-granted key
 	cx.user, cx.pass = "", ""
-	if err := ctlV3PutFailPerm(cx, "baz", "bar"); err != nil {
-		cx.t.Error(err)
-	}
-}
-
-func authTestRevokeWithDelete(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// create a new role
-	cx.user, cx.pass = "root", "root"
-	if err := ctlV3Role(cx, []string{"add", "test-role2"}, "Role test-role2 created"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// grant the new role to the user
-	if err := ctlV3User(cx, []string{"grant-role", "test-user", "test-role2"}, "Role test-role2 is granted to user test-user", nil); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// check the result
-	if err := ctlV3User(cx, []string{"get", "test-user"}, "Roles: test-role test-role2", nil); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// delete the role, test-role2 must be revoked from test-user
-	if err := ctlV3Role(cx, []string{"delete", "test-role2"}, "Role test-role2 deleted"); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// check the result
-	if err := ctlV3User(cx, []string{"get", "test-user"}, "Roles: test-role", nil); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authTestInvalidMgmt(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	if err := ctlV3Role(cx, []string{"delete", "root"}, "Error: etcdserver: invalid auth management"); err == nil {
-		cx.t.Fatal("deleting the role root must not be allowed")
-	}
-
-	if err := ctlV3User(cx, []string{"revoke-role", "root", "root"}, "Error: etcdserver: invalid auth management", []string{}); err == nil {
-		cx.t.Fatal("revoking the role root from the user root must not be allowed")
-	}
+	err := ctlV3PutFailPerm(cx, "baz", "bar")
+	require.ErrorContains(cx.t, err, "permission denied")
 }
 
 func authTestFromKeyPerm(cx ctlCtx) {
@@ -721,9 +179,8 @@ func authTestFromKeyPerm(cx ctlCtx) {
 	}
 
 	// try a non granted key
-	if err := ctlV3PutFailPerm(cx, "x", "baz"); err != nil {
-		cx.t.Fatal(err)
-	}
+	err := ctlV3PutFailPerm(cx, "x", "baz")
+	require.ErrorContains(cx.t, err, "permission denied")
 
 	// revoke the open ended permission
 	cx.user, cx.pass = "root", "root"
@@ -735,9 +192,8 @@ func authTestFromKeyPerm(cx ctlCtx) {
 	cx.user, cx.pass = "test-user", "pass"
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("z%d", i)
-		if err := ctlV3PutFailPerm(cx, key, "val"); err != nil {
-			cx.t.Fatal(err)
-		}
+		err := ctlV3PutFailPerm(cx, key, "val")
+		require.ErrorContains(cx.t, err, "permission denied")
 	}
 
 	// grant the entire keys
@@ -765,75 +221,8 @@ func authTestFromKeyPerm(cx ctlCtx) {
 	cx.user, cx.pass = "test-user", "pass"
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("z%d", i)
-		if err := ctlV3PutFailPerm(cx, key, "val"); err != nil {
-			cx.t.Fatal(err)
-		}
-	}
-}
-
-func authLeaseTestKeepAlive(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-	// put with TTL 10 seconds and keep-alive
-	leaseID, err := ctlV3LeaseGrant(cx, 10)
-	if err != nil {
-		cx.t.Fatalf("leaseTestKeepAlive: ctlV3LeaseGrant error (%v)", err)
-	}
-	if err := ctlV3Put(cx, "key", "val", leaseID); err != nil {
-		cx.t.Fatalf("leaseTestKeepAlive: ctlV3Put error (%v)", err)
-	}
-	if err := ctlV3LeaseKeepAlive(cx, leaseID); err != nil {
-		cx.t.Fatalf("leaseTestKeepAlive: ctlV3LeaseKeepAlive error (%v)", err)
-	}
-	if err := ctlV3Get(cx, []string{"key"}, kv{"key", "val"}); err != nil {
-		cx.t.Fatalf("leaseTestKeepAlive: ctlV3Get error (%v)", err)
-	}
-}
-
-func authLeaseTestTimeToLiveExpired(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	ttl := 3
-	if err := leaseTestTimeToLiveExpire(cx, ttl); err != nil {
-		cx.t.Fatalf("leaseTestTimeToLiveExpire: error (%v)", err)
-	}
-}
-
-func authLeaseTestLeaseGrantLeases(cx ctlCtx) {
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	if err := leaseTestGrantLeasesList(cx); err != nil {
-		cx.t.Fatalf("authLeaseTestLeaseGrantLeases: error (%v)", err)
-	}
-}
-
-func authLeaseTestLeaseRevoke(cx ctlCtx) {
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	// put with TTL 10 seconds and revoke
-	leaseID, err := ctlV3LeaseGrant(cx, 10)
-	if err != nil {
-		cx.t.Fatalf("ctlV3LeaseGrant error (%v)", err)
-	}
-	if err := ctlV3Put(cx, "key", "val", leaseID); err != nil {
-		cx.t.Fatalf("ctlV3Put error (%v)", err)
-	}
-	if err := ctlV3LeaseRevoke(cx, leaseID); err != nil {
-		cx.t.Fatalf("ctlV3LeaseRevoke error (%v)", err)
-	}
-	if err := ctlV3GetWithErr(cx, []string{"key"}, []string{"retrying of unary invoker failed"}); err != nil { // expect errors
-		cx.t.Fatalf("ctlV3GetWithErr error (%v)", err)
+		err := ctlV3PutFailPerm(cx, key, "val")
+		require.ErrorContains(cx.t, err, "permission denied")
 	}
 }
 
@@ -899,92 +288,18 @@ func authTestWatch(cx ctlCtx) {
 		var err error
 		if tt.want {
 			err = ctlV3Watch(cx, tt.args, tt.wkv...)
-		} else {
-			err = ctlV3WatchFailPerm(cx, tt.args)
-		}
-
-		if err != nil {
-			if cx.dialTimeout > 0 && !isGRPCTimedout(err) {
+			if err != nil && cx.dialTimeout > 0 && !isGRPCTimedout(err) {
 				cx.t.Errorf("watchTest #%d: ctlV3Watch error (%v)", i, err)
 			}
+		} else {
+			err = ctlV3WatchFailPerm(cx, tt.args)
+			// this will not have any meaningful error output, but the process fails due to the cancellation
+			require.ErrorContains(cx.t, err, "unexpected exit code")
 		}
 
 		<-donec
 	}
 
-}
-
-func authTestRoleGet(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	expected := []string{
-		"Role test-role",
-		"KV Read:", "foo",
-		"KV Write:", "foo",
-	}
-	if err := e2e.SpawnWithExpects(append(cx.PrefixArgs(), "role", "get", "test-role"), cx.envMap, expected...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// test-user can get the information of test-role because it belongs to the role
-	cx.user, cx.pass = "test-user", "pass"
-	if err := e2e.SpawnWithExpects(append(cx.PrefixArgs(), "role", "get", "test-role"), cx.envMap, expected...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// test-user cannot get the information of root because it doesn't belong to the role
-	expected = []string{
-		"Error: etcdserver: permission denied",
-	}
-	if err := e2e.SpawnWithExpects(append(cx.PrefixArgs(), "role", "get", "root"), cx.envMap, expected...); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authTestUserGet(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-
-	expected := []string{
-		"User: test-user",
-		"Roles: test-role",
-	}
-
-	if err := e2e.SpawnWithExpects(append(cx.PrefixArgs(), "user", "get", "test-user"), cx.envMap, expected...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// test-user can get the information of test-user itself
-	cx.user, cx.pass = "test-user", "pass"
-	if err := e2e.SpawnWithExpects(append(cx.PrefixArgs(), "user", "get", "test-user"), cx.envMap, expected...); err != nil {
-		cx.t.Fatal(err)
-	}
-
-	// test-user cannot get the information of root
-	expected = []string{
-		"Error: etcdserver: permission denied",
-	}
-	if err := e2e.SpawnWithExpects(append(cx.PrefixArgs(), "user", "get", "root"), cx.envMap, expected...); err != nil {
-		cx.t.Fatal(err)
-	}
-}
-
-func authTestRoleList(cx ctlCtx) {
-	if err := authEnable(cx); err != nil {
-		cx.t.Fatal(err)
-	}
-	cx.user, cx.pass = "root", "root"
-	authSetupTestUser(cx)
-	if err := e2e.SpawnWithExpectWithEnv(append(cx.PrefixArgs(), "role", "list"), cx.envMap, "test-role"); err != nil {
-		cx.t.Fatal(err)
-	}
 }
 
 func authTestDefrag(cx ctlCtx) {
@@ -1122,16 +437,14 @@ func certCNAndUsername(cx ctlCtx, noPassword bool) {
 		cx.t.Error(err)
 	}
 
-	// try a non granted key for both of them
+	// try a non-granted key for both of them
 	cx.user, cx.pass = "", ""
-	if err := ctlV3PutFailPerm(cx, "baz", "bar"); err != nil {
-		cx.t.Error(err)
-	}
+	err := ctlV3PutFailPerm(cx, "baz", "bar")
+	require.ErrorContains(cx.t, err, "permission denied")
 
 	cx.user, cx.pass = "test-user", "pass"
-	if err := ctlV3PutFailPerm(cx, "baz", "bar"); err != nil {
-		cx.t.Error(err)
-	}
+	err = ctlV3PutFailPerm(cx, "baz", "bar")
+	require.ErrorContains(cx.t, err, "permission denied")
 }
 
 func authTestCertCNAndUsername(cx ctlCtx) {
@@ -1180,7 +493,7 @@ func authTestRevisionConsistency(cx ctlCtx) {
 
 	// get node0 auth revision
 	node0 := cx.epc.Procs[0]
-	endpoint := node0.EndpointsV3()[0]
+	endpoint := node0.EndpointsGRPC()[0]
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, Username: cx.user, Password: cx.pass, DialTimeout: 3 * time.Second})
 	if err != nil {
 		cx.t.Fatal(err)
@@ -1194,8 +507,7 @@ func authTestRevisionConsistency(cx ctlCtx) {
 	oldAuthRevision := sresp.AuthRevision
 
 	// restart the node
-	node0.WithStopSignal(syscall.SIGINT)
-	if err := node0.Restart(); err != nil {
+	if err := node0.Restart(context.TODO()); err != nil {
 		cx.t.Fatal(err)
 	}
 
@@ -1209,5 +521,116 @@ func authTestRevisionConsistency(cx ctlCtx) {
 	// assert AuthRevision equal
 	if newAuthRevision != oldAuthRevision {
 		cx.t.Fatalf("auth revison shouldn't change when restarting etcd, expected: %d, got: %d", oldAuthRevision, newAuthRevision)
+	}
+}
+
+func ctlV3EndpointHealth(cx ctlCtx) error {
+	cmdArgs := append(cx.PrefixArgs(), "endpoint", "health")
+	lines := make([]string, cx.epc.Cfg.ClusterSize)
+	for i := range lines {
+		lines[i] = "is healthy"
+	}
+	return e2e.SpawnWithExpects(cmdArgs, cx.envMap, lines...)
+}
+
+func ctlV3User(cx ctlCtx, args []string, expStr string, stdIn []string) error {
+	cmdArgs := append(cx.PrefixArgs(), "user")
+	cmdArgs = append(cmdArgs, args...)
+
+	proc, err := e2e.SpawnCmd(cmdArgs, cx.envMap)
+	if err != nil {
+		return err
+	}
+	defer proc.Close()
+
+	// Send 'stdIn' strings as input.
+	for _, s := range stdIn {
+		if err = proc.Send(s + "\r"); err != nil {
+			return err
+		}
+	}
+
+	_, err = proc.Expect(expStr)
+	return err
+}
+
+// authTestCacheReload tests the permissions when a member restarts
+func authTestCacheReload(cx ctlCtx) {
+
+	authData := []struct {
+		user string
+		role string
+		pass string
+	}{
+		{
+			user: "root",
+			role: "root",
+			pass: "123",
+		},
+		{
+			user: "user0",
+			role: "role0",
+			pass: "123",
+		},
+	}
+
+	node0 := cx.epc.Procs[0]
+	endpoint := node0.EndpointsGRPC()[0]
+
+	// create a client
+	c, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	if err != nil {
+		cx.t.Fatal(err)
+	}
+	defer c.Close()
+
+	for _, authObj := range authData {
+		// add role
+		if _, err = c.RoleAdd(context.TODO(), authObj.role); err != nil {
+			cx.t.Fatal(err)
+		}
+
+		// add user
+		if _, err = c.UserAdd(context.TODO(), authObj.user, authObj.pass); err != nil {
+			cx.t.Fatal(err)
+		}
+
+		// grant role to user
+		if _, err = c.UserGrantRole(context.TODO(), authObj.user, authObj.role); err != nil {
+			cx.t.Fatal(err)
+		}
+	}
+
+	// role grant permission to role0
+	if _, err = c.RoleGrantPermission(context.TODO(), authData[1].role, "foo", "", clientv3.PermissionType(clientv3.PermReadWrite)); err != nil {
+		cx.t.Fatal(err)
+	}
+
+	// enable auth
+	if _, err = c.AuthEnable(context.TODO()); err != nil {
+		cx.t.Fatal(err)
+	}
+
+	// create another client with ID:Password
+	c2, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, Username: authData[1].user, Password: authData[1].pass, DialTimeout: 3 * time.Second})
+	if err != nil {
+		cx.t.Fatal(err)
+	}
+	defer c2.Close()
+
+	// create foo since that is within the permission set
+	// expectation is to succeed
+	if _, err = c2.Put(context.TODO(), "foo", "bar"); err != nil {
+		cx.t.Fatal(err)
+	}
+
+	// restart the node
+	if err := node0.Restart(context.TODO()); err != nil {
+		cx.t.Fatal(err)
+	}
+
+	// nothing has changed, but it fails without refreshing cache after restart
+	if _, err = c2.Put(context.TODO(), "foo", "bar2"); err != nil {
+		cx.t.Fatal(err)
 	}
 }

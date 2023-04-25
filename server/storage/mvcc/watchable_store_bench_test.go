@@ -16,20 +16,19 @@ package mvcc
 
 import (
 	"math/rand"
-	"os"
 	"testing"
+
+	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/lease"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
-
-	"go.uber.org/zap"
 )
 
 func BenchmarkWatchableStorePut(b *testing.B) {
-	be, tmpPath := betesting.NewDefaultTmpBackend(b)
-	s := New(zap.NewExample(), be, &lease.FakeLessor{}, StoreConfig{})
-	defer cleanup(s, be, tmpPath)
+	be, _ := betesting.NewDefaultTmpBackend(b)
+	s := New(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, be)
 
 	// arbitrary number of bytes
 	bytesN := 64
@@ -47,9 +46,9 @@ func BenchmarkWatchableStorePut(b *testing.B) {
 // with transaction begin and end, where transaction involves
 // some synchronization operations, such as mutex locking.
 func BenchmarkWatchableStoreTxnPut(b *testing.B) {
-	be, tmpPath := betesting.NewDefaultTmpBackend(b)
-	s := New(zap.NewExample(), be, &lease.FakeLessor{}, StoreConfig{})
-	defer cleanup(s, be, tmpPath)
+	be, _ := betesting.NewDefaultTmpBackend(b)
+	s := New(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, be)
 
 	// arbitrary number of bytes
 	bytesN := 64
@@ -78,9 +77,9 @@ func BenchmarkWatchableStoreWatchPutUnsync(b *testing.B) {
 }
 
 func benchmarkWatchableStoreWatchPut(b *testing.B, synced bool) {
-	be, tmpPath := betesting.NewDefaultTmpBackend(b)
-	s := newWatchableStore(zap.NewExample(), be, &lease.FakeLessor{}, StoreConfig{})
-	defer cleanup(s, be, tmpPath)
+	be, _ := betesting.NewDefaultTmpBackend(b)
+	s := newWatchableStore(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
+	defer cleanup(s, be)
 
 	k := []byte("testkey")
 	v := []byte("testval")
@@ -113,16 +112,17 @@ func benchmarkWatchableStoreWatchPut(b *testing.B, synced bool) {
 	}
 }
 
-// Benchmarks on cancel function performance for unsynced watchers
-// in a WatchableStore. It creates k*N watchers to populate unsynced
-// with a reasonably large number of watchers. And measures the time it
-// takes to cancel N watchers out of k*N watchers. The performance is
-// expected to differ depending on the unsynced member implementation.
+// BenchmarkWatchableStoreUnsyncedCancel benchmarks on cancel function
+// performance for unsynced watchers in a WatchableStore. It creates
+// k*N watchers to populate unsynced with a reasonably large number of
+// watchers. And measures the time it takes to cancel N watchers out
+// of k*N watchers. The performance is expected to differ depending on
+// the unsynced member implementation.
 // TODO: k is an arbitrary constant. We need to figure out what factor
 // we should put to simulate the real-world use cases.
 func BenchmarkWatchableStoreUnsyncedCancel(b *testing.B) {
-	be, tmpPath := betesting.NewDefaultTmpBackend(b)
-	s := NewStore(zap.NewExample(), be, &lease.FakeLessor{}, StoreConfig{})
+	be, _ := betesting.NewDefaultTmpBackend(b)
+	s := NewStore(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
 
 	// manually create watchableStore instead of newWatchableStore
 	// because newWatchableStore periodically calls syncWatchersLoop
@@ -135,12 +135,10 @@ func BenchmarkWatchableStoreUnsyncedCancel(b *testing.B) {
 		// to make the test not crash from assigning to nil map.
 		// 'synced' doesn't get populated in this test.
 		synced: newWatcherGroup(),
+		stopc:  make(chan struct{}),
 	}
 
-	defer func() {
-		ws.store.Close()
-		os.Remove(tmpPath)
-	}()
+	defer cleanup(ws, be)
 
 	// Put a key so that we can spawn watchers on that key
 	// (testKey in this test). This increases the rev to 1,
@@ -151,6 +149,7 @@ func BenchmarkWatchableStoreUnsyncedCancel(b *testing.B) {
 	s.Put(testKey, testValue, lease.NoLease)
 
 	w := ws.NewWatchStream()
+	defer w.Close()
 
 	const k int = 2
 	benchSampleN := b.N
@@ -178,13 +177,10 @@ func BenchmarkWatchableStoreUnsyncedCancel(b *testing.B) {
 }
 
 func BenchmarkWatchableStoreSyncedCancel(b *testing.B) {
-	be, tmpPath := betesting.NewDefaultTmpBackend(b)
-	s := newWatchableStore(zap.NewExample(), be, &lease.FakeLessor{}, StoreConfig{})
+	be, _ := betesting.NewDefaultTmpBackend(b)
+	s := newWatchableStore(zaptest.NewLogger(b), be, &lease.FakeLessor{}, StoreConfig{})
 
-	defer func() {
-		s.store.Close()
-		os.Remove(tmpPath)
-	}()
+	defer cleanup(s, be)
 
 	// Put a key so that we can spawn watchers on that key
 	testKey := []byte("foo")
@@ -192,6 +188,7 @@ func BenchmarkWatchableStoreSyncedCancel(b *testing.B) {
 	s.Put(testKey, testValue, lease.NoLease)
 
 	w := s.NewWatchStream()
+	defer w.Close()
 
 	// put 1 million watchers on the same key
 	const watcherN = 1000000

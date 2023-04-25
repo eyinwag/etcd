@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build !cluster_proxy
-// +build !cluster_proxy
 
 package connectivity_test
 
@@ -25,13 +24,18 @@ import (
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
-	"go.etcd.io/etcd/tests/v3/integration/clientv3"
+	clientv3test "go.etcd.io/etcd/tests/v3/integration/clientv3"
 	"google.golang.org/grpc"
 )
 
 var errExpected = errors.New("expected error")
+
+func isErrorExpected(err error) bool {
+	return clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) ||
+		err == rpctypes.ErrTimeout || err == rpctypes.ErrTimeoutDueToLeaderFail
+}
 
 // TestBalancerUnderNetworkPartitionPut tests when one member becomes isolated,
 // first Put request fails, and following retry succeeds with client balancer
@@ -39,7 +43,7 @@ var errExpected = errors.New("expected error")
 func TestBalancerUnderNetworkPartitionPut(t *testing.T) {
 	testBalancerUnderNetworkPartition(t, func(cli *clientv3.Client, ctx context.Context) error {
 		_, err := cli.Put(ctx, "a", "b")
-		if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) || err == rpctypes.ErrTimeout {
+		if isErrorExpected(err) {
 			return errExpected
 		}
 		return err
@@ -49,7 +53,7 @@ func TestBalancerUnderNetworkPartitionPut(t *testing.T) {
 func TestBalancerUnderNetworkPartitionDelete(t *testing.T) {
 	testBalancerUnderNetworkPartition(t, func(cli *clientv3.Client, ctx context.Context) error {
 		_, err := cli.Delete(ctx, "a")
-		if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) || err == rpctypes.ErrTimeout {
+		if isErrorExpected(err) {
 			return errExpected
 		}
 		return err
@@ -62,7 +66,7 @@ func TestBalancerUnderNetworkPartitionTxn(t *testing.T) {
 			If(clientv3.Compare(clientv3.Version("foo"), "=", 0)).
 			Then(clientv3.OpPut("foo", "bar")).
 			Else(clientv3.OpPut("foo", "baz")).Commit()
-		if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) || err == rpctypes.ErrTimeout {
+		if isErrorExpected(err) {
 			return errExpected
 		}
 		return err
@@ -75,7 +79,7 @@ func TestBalancerUnderNetworkPartitionTxn(t *testing.T) {
 func TestBalancerUnderNetworkPartitionLinearizableGetWithLongTimeout(t *testing.T) {
 	testBalancerUnderNetworkPartition(t, func(cli *clientv3.Client, ctx context.Context) error {
 		_, err := cli.Get(ctx, "a")
-		if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) || err == rpctypes.ErrTimeout {
+		if isErrorExpected(err) {
 			return errExpected
 		}
 		return err
@@ -105,9 +109,8 @@ func TestBalancerUnderNetworkPartitionSerializableGet(t *testing.T) {
 func testBalancerUnderNetworkPartition(t *testing.T, op func(*clientv3.Client, context.Context) error, timeout time.Duration) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{
-		Size:               3,
-		SkipCreatingClient: true,
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{
+		Size: 3,
 	})
 	defer clus.Terminate(t)
 
@@ -161,9 +164,8 @@ func testBalancerUnderNetworkPartition(t *testing.T, op func(*clientv3.Client, c
 func TestBalancerUnderNetworkPartitionLinearizableGetLeaderElection(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{
-		Size:               3,
-		SkipCreatingClient: true,
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{
+		Size: 3,
 	})
 	defer clus.Terminate(t)
 	eps := []string{clus.Members[0].GRPCURL(), clus.Members[1].GRPCURL(), clus.Members[2].GRPCURL()}
@@ -216,9 +218,8 @@ func TestBalancerUnderNetworkPartitionWatchFollower(t *testing.T) {
 func testBalancerUnderNetworkPartitionWatch(t *testing.T, isolateLeader bool) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{
-		Size:               3,
-		SkipCreatingClient: true,
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{
+		Size: 3,
 	})
 	defer clus.Terminate(t)
 
@@ -276,9 +277,8 @@ func testBalancerUnderNetworkPartitionWatch(t *testing.T, isolateLeader bool) {
 func TestDropReadUnderNetworkPartition(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{
-		Size:               3,
-		SkipCreatingClient: true,
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{
+		Size: 3,
 	})
 	defer clus.Terminate(t)
 	leaderIndex := clus.WaitLeader(t)

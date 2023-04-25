@@ -19,16 +19,17 @@ import (
 	"testing"
 	"time"
 
-	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/v3"
-	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
 	"google.golang.org/grpc"
+
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
 )
 
 func TestUserError(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	authapi := clus.RandClient()
@@ -57,7 +58,7 @@ func TestUserError(t *testing.T) {
 func TestUserErrorAuth(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	authapi := clus.RandClient()
@@ -110,11 +111,12 @@ func authSetupRoot(t *testing.T, auth clientv3.Auth) {
 	}
 }
 
-// Client can connect to etcd even if they supply credentials and the server is in AuthDisable mode.
+// TestGetTokenWithoutAuth is when Client can connect to etcd even if they
+// supply credentials and the server is in AuthDisable mode.
 func TestGetTokenWithoutAuth(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 2})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
 	authapi := clus.RandClient()

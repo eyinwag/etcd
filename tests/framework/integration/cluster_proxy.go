@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build cluster_proxy
-// +build cluster_proxy
 
 package integration
 
@@ -21,7 +20,7 @@ import (
 	"context"
 	"sync"
 
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/namespace"
 	"go.etcd.io/etcd/server/v3/proxy/grpcproxy"
 	"go.etcd.io/etcd/server/v3/proxy/grpcproxy/adapter"

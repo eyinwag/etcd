@@ -34,6 +34,7 @@ import (
 
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/tlsutil"
+	"go.etcd.io/etcd/client/pkg/v3/verify"
 
 	"go.uber.org/zap"
 )
@@ -43,7 +44,7 @@ func NewListener(addr, scheme string, tlsinfo *TLSInfo) (l net.Listener, err err
 	return newListener(addr, scheme, WithTLSInfo(tlsinfo))
 }
 
-// NewListenerWithOpts creates a new listener which accpets listener options.
+// NewListenerWithOpts creates a new listener which accepts listener options.
 func NewListenerWithOpts(addr, scheme string, opts ...ListenerOption) (net.Listener, error) {
 	return newListener(addr, scheme, opts...)
 }
@@ -68,7 +69,7 @@ func newListener(addr, scheme string, opts ...ListenerOption) (net.Listener, err
 		fallthrough
 	case lnOpts.IsTimeout(), lnOpts.IsSocketOpts():
 		// timeout listener with socket options.
-		ln, err := lnOpts.ListenConfig.Listen(context.TODO(), "tcp", addr)
+		ln, err := newKeepAliveListener(&lnOpts.ListenConfig, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -78,7 +79,7 @@ func newListener(addr, scheme string, opts ...ListenerOption) (net.Listener, err
 			writeTimeout: lnOpts.writeTimeout,
 		}
 	case lnOpts.IsTimeout():
-		ln, err := net.Listen("tcp", addr)
+		ln, err := newKeepAliveListener(nil, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +89,7 @@ func newListener(addr, scheme string, opts ...ListenerOption) (net.Listener, err
 			writeTimeout: lnOpts.writeTimeout,
 		}
 	default:
-		ln, err := net.Listen("tcp", addr)
+		ln, err := newKeepAliveListener(nil, addr)
 		if err != nil {
 			return nil, err
 		}
@@ -100,6 +101,19 @@ func newListener(addr, scheme string, opts ...ListenerOption) (net.Listener, err
 		return lnOpts.Listener, nil
 	}
 	return wrapTLS(scheme, lnOpts.tlsInfo, lnOpts.Listener)
+}
+
+func newKeepAliveListener(cfg *net.ListenConfig, addr string) (ln net.Listener, err error) {
+	if cfg != nil {
+		ln, err = cfg.Listen(context.TODO(), "tcp", addr)
+	} else {
+		ln, err = net.Listen("tcp", addr)
+	}
+	if err != nil {
+		return
+	}
+
+	return NewKeepAliveListener(ln, "tcp", nil)
 }
 
 func wrapTLS(scheme string, tlsinfo *TLSInfo, l net.Listener) (net.Listener, error) {
@@ -152,6 +166,14 @@ type TLSInfo struct {
 	// Note that cipher suites are prioritized in the given order.
 	CipherSuites []uint16
 
+	// MinVersion is the minimum TLS version that is acceptable.
+	// If not set, the minimum version is TLS 1.2.
+	MinVersion uint16
+
+	// MaxVersion is the maximum TLS version that is acceptable.
+	// If not set, the default used by Go is selected (see tls.Config.MaxVersion).
+	MaxVersion uint16
+
 	selfCert bool
 
 	// parseFunc exists to simplify testing. Typically, parseFunc
@@ -183,9 +205,10 @@ func (info TLSInfo) Empty() bool {
 }
 
 func SelfCert(lg *zap.Logger, dirpath string, hosts []string, selfSignedCertValidity uint, additionalUsages ...x509.ExtKeyUsage) (info TLSInfo, err error) {
+	verify.Assert(lg != nil, "nil log isn't allowed")
 	info.Logger = lg
 	if selfSignedCertValidity == 0 {
-		err = fmt.Errorf("selfSignedCertValidity is invalid,it should be greater than 0")
+		err = errors.New("selfSignedCertValidity is invalid,it should be greater than 0")
 		info.Logger.Warn(
 			"cannot generate cert",
 			zap.Error(err),
@@ -326,8 +349,8 @@ func SelfCert(lg *zap.Logger, dirpath string, hosts []string, selfSignedCertVali
 // Previously,
 // 1. Server has non-empty (*tls.Config).Certificates on client hello
 // 2. Server calls (*tls.Config).GetCertificate iff:
-//    - Server's (*tls.Config).Certificates is not empty, or
-//    - Client supplies SNI; non-empty (*tls.ClientHelloInfo).ServerName
+//   - Server's (*tls.Config).Certificates is not empty, or
+//   - Client supplies SNI; non-empty (*tls.ClientHelloInfo).ServerName
 //
 // When (*tls.Config).Certificates is always populated on initial handshake,
 // client is expected to provide a valid matching SNI to pass the TLS
@@ -365,8 +388,17 @@ func (info TLSInfo) baseConfig() (*tls.Config, error) {
 		}
 	}
 
+	var minVersion uint16
+	if info.MinVersion != 0 {
+		minVersion = info.MinVersion
+	} else {
+		// Default minimum version is TLS 1.2, previous versions are insecure and deprecated.
+		minVersion = tls.VersionTLS12
+	}
+
 	cfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion: minVersion,
+		MaxVersion: info.MaxVersion,
 		ServerName: info.ServerName,
 	}
 
@@ -497,11 +529,6 @@ func (info TLSInfo) ServerConfig() (*tls.Config, error) {
 	// "h2" NextProtos is necessary for enabling HTTP2 for go's HTTP server
 	cfg.NextProtos = []string{"h2"}
 
-	// go1.13 enables TLS 1.3 by default
-	// and in TLS 1.3, cipher suites are not configurable
-	// setting Max TLS version to TLS 1.2 for go 1.13
-	cfg.MaxVersion = tls.VersionTLS12
-
 	return cfg, nil
 }
 
@@ -555,11 +582,6 @@ func (info TLSInfo) ClientConfig() (*tls.Config, error) {
 			return nil, fmt.Errorf("cert has non empty Common Name (%s): %s", cn, info.CertFile)
 		}
 	}
-
-	// go1.13 enables TLS 1.3 by default
-	// and in TLS 1.3, cipher suites are not configurable
-	// setting Max TLS version to TLS 1.2 for go 1.13
-	cfg.MaxVersion = tls.VersionTLS12
 
 	return cfg, nil
 }

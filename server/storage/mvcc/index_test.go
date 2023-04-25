@@ -19,11 +19,11 @@ import (
 	"testing"
 
 	"github.com/google/btree"
-	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
 
 func TestIndexGet(t *testing.T) {
-	ti := newTreeIndex(zap.NewExample())
+	ti := newTreeIndex(zaptest.NewLogger(t))
 	ti.Put([]byte("foo"), revision{main: 2})
 	ti.Put([]byte("foo"), revision{main: 4})
 	ti.Tombstone([]byte("foo"), revision{main: 6})
@@ -65,7 +65,7 @@ func TestIndexRange(t *testing.T) {
 	allKeys := [][]byte{[]byte("foo"), []byte("foo1"), []byte("foo2")}
 	allRevs := []revision{{main: 1}, {main: 2}, {main: 3}}
 
-	ti := newTreeIndex(zap.NewExample())
+	ti := newTreeIndex(zaptest.NewLogger(t))
 	for i := range allKeys {
 		ti.Put(allKeys[i], allRevs[i])
 	}
@@ -121,7 +121,7 @@ func TestIndexRange(t *testing.T) {
 }
 
 func TestIndexTombstone(t *testing.T) {
-	ti := newTreeIndex(zap.NewExample())
+	ti := newTreeIndex(zaptest.NewLogger(t))
 	ti.Put([]byte("foo"), revision{main: 1})
 
 	err := ti.Tombstone([]byte("foo"), revision{main: 2})
@@ -139,57 +139,96 @@ func TestIndexTombstone(t *testing.T) {
 	}
 }
 
-func TestIndexRangeSince(t *testing.T) {
+func TestIndexRevision(t *testing.T) {
 	allKeys := [][]byte{[]byte("foo"), []byte("foo1"), []byte("foo2"), []byte("foo2"), []byte("foo1"), []byte("foo")}
 	allRevs := []revision{{main: 1}, {main: 2}, {main: 3}, {main: 4}, {main: 5}, {main: 6}}
 
-	ti := newTreeIndex(zap.NewExample())
+	ti := newTreeIndex(zaptest.NewLogger(t))
 	for i := range allKeys {
 		ti.Put(allKeys[i], allRevs[i])
 	}
 
-	atRev := int64(1)
 	tests := []struct {
 		key, end []byte
+		atRev    int64
+		limit    int
 		wrevs    []revision
+		wcounts  int
 	}{
 		// single key that not found
 		{
-			[]byte("bar"), nil, nil,
+			[]byte("bar"), nil, 6, 0, nil, 0,
 		},
 		// single key that found
 		{
-			[]byte("foo"), nil, []revision{{main: 1}, {main: 6}},
+			[]byte("foo"), nil, 6, 0, []revision{{main: 6}}, 1,
 		},
-		// range keys, return first member
+		// various range keys, fixed atRev, unlimited
 		{
-			[]byte("foo"), []byte("foo1"), []revision{{main: 1}, {main: 6}},
+			[]byte("foo"), []byte("foo1"), 6, 0, []revision{{main: 6}}, 1,
 		},
-		// range keys, return first two members
 		{
-			[]byte("foo"), []byte("foo2"), []revision{{main: 1}, {main: 2}, {main: 5}, {main: 6}},
+			[]byte("foo"), []byte("foo2"), 6, 0, []revision{{main: 6}, {main: 5}}, 2,
 		},
-		// range keys, return all members
 		{
-			[]byte("foo"), []byte("fop"), allRevs,
+			[]byte("foo"), []byte("fop"), 6, 0, []revision{{main: 6}, {main: 5}, {main: 4}}, 3,
 		},
-		// range keys, return last two members
 		{
-			[]byte("foo1"), []byte("fop"), []revision{{main: 2}, {main: 3}, {main: 4}, {main: 5}},
+			[]byte("foo1"), []byte("fop"), 6, 0, []revision{{main: 5}, {main: 4}}, 2,
 		},
-		// range keys, return last member
 		{
-			[]byte("foo2"), []byte("fop"), []revision{{main: 3}, {main: 4}},
+			[]byte("foo2"), []byte("fop"), 6, 0, []revision{{main: 4}}, 1,
 		},
-		// range keys, return nothing
 		{
-			[]byte("foo3"), []byte("fop"), nil,
+			[]byte("foo3"), []byte("fop"), 6, 0, nil, 0,
+		},
+		// fixed range keys, various atRev, unlimited
+		{
+			[]byte("foo1"), []byte("fop"), 1, 0, nil, 0,
+		},
+		{
+			[]byte("foo1"), []byte("fop"), 2, 0, []revision{{main: 2}}, 1,
+		},
+		{
+			[]byte("foo1"), []byte("fop"), 3, 0, []revision{{main: 2}, {main: 3}}, 2,
+		},
+		{
+			[]byte("foo1"), []byte("fop"), 4, 0, []revision{{main: 2}, {main: 4}}, 2,
+		},
+		{
+			[]byte("foo1"), []byte("fop"), 5, 0, []revision{{main: 5}, {main: 4}}, 2,
+		},
+		{
+			[]byte("foo1"), []byte("fop"), 6, 0, []revision{{main: 5}, {main: 4}}, 2,
+		},
+		// fixed range keys, fixed atRev, various limit
+		{
+			[]byte("foo"), []byte("fop"), 6, 1, []revision{{main: 6}}, 3,
+		},
+		{
+			[]byte("foo"), []byte("fop"), 6, 2, []revision{{main: 6}, {main: 5}}, 3,
+		},
+		{
+			[]byte("foo"), []byte("fop"), 6, 3, []revision{{main: 6}, {main: 5}, {main: 4}}, 3,
+		},
+		{
+			[]byte("foo"), []byte("fop"), 3, 1, []revision{{main: 1}}, 3,
+		},
+		{
+			[]byte("foo"), []byte("fop"), 3, 2, []revision{{main: 1}, {main: 2}}, 3,
+		},
+		{
+			[]byte("foo"), []byte("fop"), 3, 3, []revision{{main: 1}, {main: 2}, {main: 3}}, 3,
 		},
 	}
 	for i, tt := range tests {
-		revs := ti.RangeSince(tt.key, tt.end, atRev)
+		revs, _ := ti.Revisions(tt.key, tt.end, tt.atRev, tt.limit)
 		if !reflect.DeepEqual(revs, tt.wrevs) {
-			t.Errorf("#%d: revs = %+v, want %+v", i, revs, tt.wrevs)
+			t.Errorf("#%d limit %d: revs = %+v, want %+v", i, tt.limit, revs, tt.wrevs)
+		}
+		count := ti.CountRevisions(tt.key, tt.end, tt.atRev)
+		if count != tt.wcounts {
+			t.Errorf("#%d: count = %d, want %v", i, count, tt.wcounts)
 		}
 	}
 }
@@ -217,7 +256,7 @@ func TestIndexCompactAndKeep(t *testing.T) {
 	}
 
 	// Continuous Compact and Keep
-	ti := newTreeIndex(zap.NewExample())
+	ti := newTreeIndex(zaptest.NewLogger(t))
 	for _, tt := range tests {
 		if tt.remove {
 			ti.Tombstone(tt.key, tt.rev)
@@ -231,7 +270,9 @@ func TestIndexCompactAndKeep(t *testing.T) {
 		if !(reflect.DeepEqual(am, keep)) {
 			t.Errorf("#%d: compact keep %v != Keep keep %v", i, am, keep)
 		}
-		wti := &treeIndex{tree: btree.New(32)}
+		wti := &treeIndex{tree: btree.NewG(32, func(aki *keyIndex, bki *keyIndex) bool {
+			return aki.Less(bki)
+		})}
 		for _, tt := range tests {
 			if _, ok := am[tt.rev]; ok || tt.rev.GreaterThan(revision{main: i}) {
 				if tt.remove {
@@ -248,7 +289,7 @@ func TestIndexCompactAndKeep(t *testing.T) {
 
 	// Once Compact and Keep
 	for i := int64(1); i < maxRev; i++ {
-		ti := newTreeIndex(zap.NewExample())
+		ti := newTreeIndex(zaptest.NewLogger(t))
 		for _, tt := range tests {
 			if tt.remove {
 				ti.Tombstone(tt.key, tt.rev)
@@ -261,7 +302,9 @@ func TestIndexCompactAndKeep(t *testing.T) {
 		if !(reflect.DeepEqual(am, keep)) {
 			t.Errorf("#%d: compact keep %v != Keep keep %v", i, am, keep)
 		}
-		wti := &treeIndex{tree: btree.New(32)}
+		wti := &treeIndex{tree: btree.NewG(32, func(aki *keyIndex, bki *keyIndex) bool {
+			return aki.Less(bki)
+		})}
 		for _, tt := range tests {
 			if _, ok := am[tt.rev]; ok || tt.rev.GreaterThan(revision{main: i}) {
 				if tt.remove {
@@ -282,12 +325,11 @@ func restore(ti *treeIndex, key []byte, created, modified revision, ver int64) {
 
 	ti.Lock()
 	defer ti.Unlock()
-	item := ti.tree.Get(keyi)
-	if item == nil {
+	okeyi, _ := ti.tree.Get(keyi)
+	if okeyi == nil {
 		keyi.restore(ti.lg, created, modified, ver)
 		ti.tree.ReplaceOrInsert(keyi)
 		return
 	}
-	okeyi := item.(*keyIndex)
 	okeyi.put(ti.lg, modified.main, modified.sub)
 }

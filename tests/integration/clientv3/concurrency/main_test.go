@@ -24,7 +24,7 @@ import (
 
 var lazyCluster = integration.NewLazyCluster()
 
-func exampleEndpoints() []string { return lazyCluster.EndpointsV3() }
+func exampleEndpoints() []string { return lazyCluster.EndpointsGRPC() }
 
 func forUnitTestsRunInMockedContext(mocking func(), example func()) {
 	// For integration tests runs in the provided environment
@@ -33,12 +33,13 @@ func forUnitTestsRunInMockedContext(mocking func(), example func()) {
 
 // TestMain sets up an etcd cluster if running the examples.
 func TestMain(m *testing.M) {
-	testutil.ExitInShortMode("Skipping: the tests require real cluster")
+	cleanup := testutil.BeforeIntegrationExamples(m)
 
 	v := m.Run()
 	lazyCluster.Terminate()
 	if v == 0 {
 		testutil.MustCheckLeakedGoroutine()
 	}
+	cleanup()
 	os.Exit(v)
 }

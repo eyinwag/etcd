@@ -17,7 +17,6 @@ package snapshot_test
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,10 +25,11 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/embed"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
+	"go.etcd.io/etcd/tests/v3/framework/testutils"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
 )
@@ -42,14 +42,14 @@ func TestSnapshotV3RestoreSingle(t *testing.T) {
 	dbPath := createSnapshotFile(t, kvs)
 
 	clusterN := 1
-	urls := newEmbedURLs(clusterN * 2)
+	urls := newEmbedURLs(t, clusterN*2)
 	cURLs, pURLs := urls[:clusterN], urls[clusterN:]
 
 	cfg := integration2.NewEmbedConfig(t, "s1")
 	cfg.InitialClusterToken = testClusterTkn
 	cfg.ClusterState = "existing"
-	cfg.LCUrls, cfg.ACUrls = cURLs, cURLs
-	cfg.LPUrls, cfg.APUrls = pURLs, pURLs
+	cfg.ListenClientUrls, cfg.AdvertiseClientUrls = cURLs, cURLs
+	cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = pURLs, pURLs
 	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, pURLs[0].String())
 
 	sp := snapshot.NewV3(zaptest.NewLogger(t))
@@ -82,7 +82,7 @@ func TestSnapshotV3RestoreSingle(t *testing.T) {
 	}
 
 	var cli *clientv3.Client
-	cli, err = integration2.NewClient(t, clientv3.Config{Endpoints: []string{cfg.ACUrls[0].String()}})
+	cli, err = integration2.NewClient(t, clientv3.Config{Endpoints: []string{cfg.AdvertiseClientUrls[0].String()}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestSnapshotV3RestoreMulti(t *testing.T) {
 
 // TestCorruptedBackupFileCheck tests if we can correctly identify a corrupted backup file.
 func TestCorruptedBackupFileCheck(t *testing.T) {
-	dbPath := integration2.MustAbsPath("testdata/corrupted_backup.db")
+	dbPath := testutils.MustAbsPath("testdata/corrupted_backup.db")
 	integration2.BeforeTest(t)
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("test file [%s] does not exist: %v", dbPath, err)
@@ -172,13 +172,13 @@ func createSnapshotFile(t *testing.T, kvs []kv) string {
 	testutil.SkipTestIfShortMode(t,
 		"Snapshot creation tests are depending on embedded etcd server so are integration-level tests.")
 	clusterN := 1
-	urls := newEmbedURLs(clusterN * 2)
+	urls := newEmbedURLs(t, clusterN*2)
 	cURLs, pURLs := urls[:clusterN], urls[clusterN:]
 
 	cfg := integration2.NewEmbedConfig(t, "default")
 	cfg.ClusterState = "new"
-	cfg.LCUrls, cfg.ACUrls = cURLs, cURLs
-	cfg.LPUrls, cfg.APUrls = pURLs, pURLs
+	cfg.ListenClientUrls, cfg.AdvertiseClientUrls = cURLs, cURLs
+	cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = pURLs, pURLs
 	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, pURLs[0].String())
 	srv, err := embed.StartEtcd(cfg)
 	if err != nil {
@@ -193,7 +193,7 @@ func createSnapshotFile(t *testing.T, kvs []kv) string {
 		t.Fatalf("failed to start embed.Etcd for creating snapshots")
 	}
 
-	ccfg := clientv3.Config{Endpoints: []string{cfg.ACUrls[0].String()}}
+	ccfg := clientv3.Config{Endpoints: []string{cfg.AdvertiseClientUrls[0].String()}}
 	cli, err := integration2.NewClient(t, ccfg)
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func restoreCluster(t *testing.T, clusterN int, dbPath string) (
 	cURLs []url.URL,
 	pURLs []url.URL,
 	srvs []*embed.Etcd) {
-	urls := newEmbedURLs(clusterN * 2)
+	urls := newEmbedURLs(t, clusterN*2)
 	cURLs, pURLs = urls[:clusterN], urls[clusterN:]
 
 	ics := ""
@@ -237,8 +237,8 @@ func restoreCluster(t *testing.T, clusterN int, dbPath string) (
 		cfg := integration2.NewEmbedConfig(t, fmt.Sprintf("m%d", i))
 		cfg.InitialClusterToken = testClusterTkn
 		cfg.ClusterState = "existing"
-		cfg.LCUrls, cfg.ACUrls = []url.URL{cURLs[i]}, []url.URL{cURLs[i]}
-		cfg.LPUrls, cfg.APUrls = []url.URL{pURLs[i]}, []url.URL{pURLs[i]}
+		cfg.ListenClientUrls, cfg.AdvertiseClientUrls = []url.URL{cURLs[i]}, []url.URL{cURLs[i]}
+		cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = []url.URL{pURLs[i]}, []url.URL{pURLs[i]}
 		cfg.InitialCluster = ics
 
 		sp := snapshot.NewV3(
@@ -284,11 +284,16 @@ func restoreCluster(t *testing.T, clusterN int, dbPath string) (
 }
 
 // TODO: TLS
-func newEmbedURLs(n int) (urls []url.URL) {
+func newEmbedURLs(t testutil.TB, n int) (urls []url.URL) {
 	urls = make([]url.URL, n)
 	for i := 0; i < n; i++ {
-		rand.Seed(int64(time.Now().Nanosecond()))
-		u, _ := url.Parse(fmt.Sprintf("unix://localhost:%d", rand.Intn(45000)))
+		l := integration2.NewLocalListener(t)
+		defer l.Close()
+
+		u, err := url.Parse(fmt.Sprintf("unix://%s", l.Addr()))
+		if err != nil {
+			t.Fatal(err)
+		}
 		urls[i] = *u
 	}
 	return urls

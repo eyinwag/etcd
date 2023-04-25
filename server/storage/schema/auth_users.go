@@ -15,8 +15,9 @@
 package schema
 
 import (
-	"go.etcd.io/etcd/api/v3/authpb"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/api/v3/authpb"
 )
 
 func (abe *authBackend) GetUser(username string) *authpb.User {
@@ -27,6 +28,28 @@ func (abe *authBackend) GetUser(username string) *authpb.User {
 }
 
 func (atx *authBatchTx) UnsafeGetUser(username string) *authpb.User {
+	arx := &authReadTx{tx: atx.tx, lg: atx.lg}
+	return arx.UnsafeGetUser(username)
+}
+
+func (atx *authBatchTx) UnsafeGetAllUsers() []*authpb.User {
+	arx := &authReadTx{tx: atx.tx, lg: atx.lg}
+	return arx.UnsafeGetAllUsers()
+}
+
+func (atx *authBatchTx) UnsafePutUser(user *authpb.User) {
+	b, err := user.Marshal()
+	if err != nil {
+		atx.lg.Panic("failed to unmarshal 'authpb.User'", zap.Error(err))
+	}
+	atx.tx.UnsafePut(AuthUsers, user.Name, b)
+}
+
+func (atx *authBatchTx) UnsafeDeleteUser(username string) {
+	atx.tx.UnsafeDelete(AuthUsers, []byte(username))
+}
+
+func (atx *authReadTx) UnsafeGetUser(username string) *authpb.User {
 	_, vs := atx.tx.UnsafeRange(AuthUsers, []byte(username), nil, 0)
 	if len(vs) == 0 {
 		return nil
@@ -51,8 +74,16 @@ func (abe *authBackend) GetAllUsers() []*authpb.User {
 	return tx.UnsafeGetAllUsers()
 }
 
-func (atx *authBatchTx) UnsafeGetAllUsers() []*authpb.User {
-	_, vs := atx.tx.UnsafeRange(AuthUsers, []byte{0}, []byte{0xff}, -1)
+func (atx *authReadTx) UnsafeGetAllUsers() []*authpb.User {
+	var vs [][]byte
+	err := atx.tx.UnsafeForEach(AuthUsers, func(k []byte, v []byte) error {
+		vs = append(vs, v)
+		return nil
+	})
+	if err != nil {
+		atx.lg.Panic("failed to get users",
+			zap.Error(err))
+	}
 	if len(vs) == 0 {
 		return nil
 	}
@@ -67,16 +98,4 @@ func (atx *authBatchTx) UnsafeGetAllUsers() []*authpb.User {
 		users[i] = user
 	}
 	return users
-}
-
-func (atx *authBatchTx) UnsafePutUser(user *authpb.User) {
-	b, err := user.Marshal()
-	if err != nil {
-		atx.lg.Panic("failed to unmarshal 'authpb.User'", zap.Error(err))
-	}
-	atx.tx.UnsafePut(AuthUsers, user.Name, b)
-}
-
-func (atx *authBatchTx) UnsafeDeleteUser(username string) {
-	atx.tx.UnsafeDelete(AuthUsers, []byte(username))
 }

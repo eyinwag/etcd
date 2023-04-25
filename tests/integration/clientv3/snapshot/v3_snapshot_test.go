@@ -26,7 +26,7 @@ import (
 
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/testutil"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/embed"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
@@ -55,7 +55,7 @@ func TestSaveSnapshotFilePermissions(t *testing.T) {
 // TestSaveSnapshotVersion ensures that the snapshot returns proper storage version.
 func TestSaveSnapshotVersion(t *testing.T) {
 	// Put some keys to ensure that wal snapshot is triggered
-	kvs := []kv{}
+	var kvs []kv
 	for i := 0; i < 10; i++ {
 		kvs = append(kvs, kv{fmt.Sprintf("%d", i), "test"})
 	}
@@ -80,8 +80,8 @@ func newEmbedConfig(t *testing.T) *embed.Config {
 	cURLs, pURLs := urls[:clusterN], urls[clusterN:]
 	cfg := integration2.NewEmbedConfig(t, "default")
 	cfg.ClusterState = "new"
-	cfg.LCUrls, cfg.ACUrls = cURLs, cURLs
-	cfg.LPUrls, cfg.APUrls = pURLs, pURLs
+	cfg.ListenClientUrls, cfg.AdvertiseClientUrls = cURLs, cURLs
+	cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = pURLs, pURLs
 	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, pURLs[0].String())
 	return cfg
 }
@@ -104,7 +104,7 @@ func createSnapshotFile(t *testing.T, cfg *embed.Config, kvs []kv) (version stri
 		t.Fatalf("failed to start embed.Etcd for creating snapshots")
 	}
 
-	ccfg := clientv3.Config{Endpoints: []string{cfg.ACUrls[0].String()}}
+	ccfg := clientv3.Config{Endpoints: []string{cfg.AdvertiseClientUrls[0].String()}}
 	cli, err := integration2.NewClient(t, ccfg)
 	if err != nil {
 		t.Fatal(err)

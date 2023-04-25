@@ -26,14 +26,14 @@ import (
 	"reflect"
 	"strings"
 
+	"go.uber.org/zap"
+
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/snapshot"
-	"go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/config"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
@@ -45,7 +45,8 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
 	"go.etcd.io/etcd/server/v3/verify"
-	"go.uber.org/zap"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 // Manager defines snapshot methods.
@@ -70,9 +71,6 @@ type Manager interface {
 
 // NewV3 returns a new snapshot Manager for v3.x snapshot.
 func NewV3(lg *zap.Logger) Manager {
-	if lg == nil {
-		lg = zap.NewExample()
-	}
 	return &v3Manager{lg: lg}
 }
 
@@ -262,7 +260,6 @@ func (s *v3Manager) Restore(cfg RestoreConfig) error {
 		zap.String("wal-dir", s.walDir),
 		zap.String("data-dir", dataDir),
 		zap.String("snap-dir", s.snapDir),
-		zap.Stack("stack"),
 	)
 
 	if err = s.saveDB(); err != nil {
@@ -303,7 +300,7 @@ func (s *v3Manager) saveDB() error {
 		return err
 	}
 
-	be := backend.NewDefaultBackend(s.outDbPath())
+	be := backend.NewDefaultBackend(s.lg, s.outDbPath())
 	defer be.Close()
 
 	err = schema.NewMembershipBackend(s.lg, be).TrimMembershipFromBackend()
@@ -401,7 +398,7 @@ func (s *v3Manager) saveWALAndSnap() (*raftpb.HardState, error) {
 	// add members again to persist them to the store we create.
 	st := v2store.New(etcdserver.StoreClusterPrefix, etcdserver.StoreKeysPrefix)
 	s.cl.SetStore(st)
-	be := backend.NewDefaultBackend(s.outDbPath())
+	be := backend.NewDefaultBackend(s.lg, s.outDbPath())
 	defer be.Close()
 	s.cl.SetBackend(schema.NewMembershipBackend(s.lg, be))
 	for _, m := range s.cl.Members() {
@@ -484,9 +481,9 @@ func (s *v3Manager) saveWALAndSnap() (*raftpb.HardState, error) {
 }
 
 func (s *v3Manager) updateCIndex(commit uint64, term uint64) error {
-	be := backend.NewDefaultBackend(s.outDbPath())
+	be := backend.NewDefaultBackend(s.lg, s.outDbPath())
 	defer be.Close()
 
-	cindex.UpdateConsistentIndex(be.BatchTx(), commit, term, false)
+	cindex.UpdateConsistentIndexForce(be.BatchTx(), commit, term)
 	return nil
 }

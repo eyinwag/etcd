@@ -33,10 +33,13 @@ const (
 func TestQueueOneReaderOneWriter(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	done := make(chan struct{})
+	defer func() {
+		<-done
+	}()
 	go func() {
 		defer func() {
 			done <- struct{}{}
@@ -61,7 +64,6 @@ func TestQueueOneReaderOneWriter(t *testing.T) {
 			t.Fatalf("expected dequeue value %v, got %v", s, i)
 		}
 	}
-	<-done
 }
 
 func TestQueueManyReaderOneWriter(t *testing.T) {
@@ -81,7 +83,7 @@ func BenchmarkQueue(b *testing.B) {
 	integration2.BeforeTest(b)
 
 	// XXX switch tests to use TB interface
-	clus := integration2.NewClusterV3(nil, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(nil, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(nil)
 	for i := 0; i < b.N; i++ {
 		testQueueNReaderMWriter(nil, manyQueueClients, manyQueueClients)
@@ -92,7 +94,7 @@ func BenchmarkQueue(b *testing.B) {
 func TestPrQueueOneReaderOneWriter(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	// write out five items with random priority
@@ -126,19 +128,19 @@ func TestPrQueueOneReaderOneWriter(t *testing.T) {
 func TestPrQueueManyReaderManyWriter(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 	rqs := newPriorityQueues(clus, manyQueueClients)
 	wqs := newPriorityQueues(clus, manyQueueClients)
 	testReadersWriters(t, rqs, wqs)
 }
 
-// BenchmarkQueue benchmarks Queues using n/n readers/writers
+// BenchmarkPrQueueOneReaderOneWriter benchmarks Queues using n/n readers/writers
 func BenchmarkPrQueueOneReaderOneWriter(b *testing.B) {
 	integration2.BeforeTest(b)
 
 	// XXX switch tests to use TB interface
-	clus := integration2.NewClusterV3(nil, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(nil, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(nil)
 	rqs := newPriorityQueues(clus, 1)
 	wqs := newPriorityQueues(clus, 1)
@@ -149,12 +151,12 @@ func BenchmarkPrQueueOneReaderOneWriter(b *testing.B) {
 
 func testQueueNReaderMWriter(t *testing.T, n int, m int) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 	testReadersWriters(t, newQueues(clus, n), newQueues(clus, m))
 }
 
-func newQueues(clus *integration2.ClusterV3, n int) (qs []testQueue) {
+func newQueues(clus *integration2.Cluster, n int) (qs []testQueue) {
 	for i := 0; i < n; i++ {
 		etcdc := clus.RandClient()
 		qs = append(qs, recipe.NewQueue(etcdc, "q"))
@@ -162,7 +164,7 @@ func newQueues(clus *integration2.ClusterV3, n int) (qs []testQueue) {
 	return qs
 }
 
-func newPriorityQueues(clus *integration2.ClusterV3, n int) (qs []testQueue) {
+func newPriorityQueues(clus *integration2.Cluster, n int) (qs []testQueue) {
 	for i := 0; i < n; i++ {
 		etcdc := clus.RandClient()
 		q := &flatPriorityQueue{recipe.NewPriorityQueue(etcdc, "prq")}

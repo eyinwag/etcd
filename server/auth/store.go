@@ -196,6 +196,7 @@ type TokenProvider interface {
 type AuthBackend interface {
 	CreateAuthBuckets()
 	ForceCommit()
+	ReadTx() AuthReadTx
 	BatchTx() AuthBatchTx
 
 	GetUser(string) *authpb.User
@@ -234,7 +235,14 @@ type authStore struct {
 	enabled   bool
 	enabledMu sync.RWMutex
 
-	rangePermCache map[string]*unifiedRangePermissions // username -> unifiedRangePermissions
+	// rangePermCache needs to be protected by rangePermCacheMu
+	// rangePermCacheMu needs to be write locked only in initialization phase or configuration changes
+	// Hot paths like Range(), needs to acquire read lock for improving performance
+	//
+	// Note that BatchTx and ReadTx cannot be a mutex for rangePermCache because they are independent resources
+	// see also: https://github.com/etcd-io/etcd/pull/13920#discussion_r849114855
+	rangePermCache   map[string]*unifiedRangePermissions // username -> unifiedRangePermissions
+	rangePermCacheMu sync.RWMutex
 
 	tokenProvider TokenProvider
 	bcryptCost    int // the algorithm cost / strength for hashing auth passwords
@@ -267,7 +275,7 @@ func (as *authStore) AuthEnable() error {
 	as.enabled = true
 	as.tokenProvider.enable()
 
-	as.rangePermCache = make(map[string]*unifiedRangePermissions)
+	as.refreshRangePermCache(tx)
 
 	as.setRevision(tx.UnsafeReadAuthRevision())
 
@@ -345,7 +353,7 @@ func (as *authStore) CheckPassword(username, password string) (uint64, error) {
 	// CompareHashAndPassword is very expensive, so we use closures
 	// to avoid putting it in the critical section of the tx lock.
 	revision, err := func() (uint64, error) {
-		tx := as.be.BatchTx()
+		tx := as.be.ReadTx()
 		tx.Lock()
 		defer tx.Unlock()
 
@@ -373,11 +381,12 @@ func (as *authStore) CheckPassword(username, password string) (uint64, error) {
 
 func (as *authStore) Recover(be AuthBackend) {
 	as.be = be
-	tx := be.BatchTx()
+	tx := be.ReadTx()
 	tx.Lock()
 
 	enabled := tx.UnsafeReadAuthEnabled()
 	as.setRevision(tx.UnsafeReadAuthRevision())
+	as.refreshRangePermCache(tx)
 
 	tx.Unlock()
 
@@ -436,6 +445,7 @@ func (as *authStore) UserAdd(r *pb.AuthUserAddRequest) (*pb.AuthUserAddResponse,
 	tx.UnsafePutUser(newUser)
 
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
 	as.lg.Info("added a user", zap.String("user-name", r.Name))
 	return &pb.AuthUserAddResponse{}, nil
@@ -458,8 +468,8 @@ func (as *authStore) UserDelete(r *pb.AuthUserDeleteRequest) (*pb.AuthUserDelete
 	tx.UnsafeDeleteUser(r.Name)
 
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
-	as.invalidateCachedPerm(r.Name)
 	as.tokenProvider.invalidateUser(r.Name)
 
 	as.lg.Info(
@@ -483,7 +493,8 @@ func (as *authStore) UserChangePassword(r *pb.AuthUserChangePasswordRequest) (*p
 	var password []byte
 	var err error
 
-	if !user.Options.NoPassword {
+	// Backward compatible with old versions of etcd, user options is nil
+	if user.Options == nil || !user.Options.NoPassword {
 		password, err = as.selectPassword(r.Password, r.HashedPassword)
 		if err != nil {
 			return nil, ErrNoPasswordUser
@@ -499,8 +510,8 @@ func (as *authStore) UserChangePassword(r *pb.AuthUserChangePasswordRequest) (*p
 	tx.UnsafePutUser(updatedUser)
 
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
-	as.invalidateCachedPerm(r.Name)
 	as.tokenProvider.invalidateUser(r.Name)
 
 	as.lg.Info(
@@ -544,9 +555,8 @@ func (as *authStore) UserGrantRole(r *pb.AuthUserGrantRoleRequest) (*pb.AuthUser
 
 	tx.UnsafePutUser(user)
 
-	as.invalidateCachedPerm(r.User)
-
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
 	as.lg.Info(
 		"granted a role to a user",
@@ -616,9 +626,8 @@ func (as *authStore) UserRevokeRole(r *pb.AuthUserRevokeRoleRequest) (*pb.AuthUs
 
 	tx.UnsafePutUser(updatedUser)
 
-	as.invalidateCachedPerm(r.Name)
-
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
 	as.lg.Info(
 		"revoked a role from a user",
@@ -681,11 +690,8 @@ func (as *authStore) RoleRevokePermission(r *pb.AuthRoleRevokePermissionRequest)
 
 	tx.UnsafePutRole(updatedRole)
 
-	// TODO(mitake): currently single role update invalidates every cache
-	// It should be optimized.
-	as.clearCachedPerm()
-
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
 	as.lg.Info(
 		"revoked a permission on range",
@@ -733,10 +739,10 @@ func (as *authStore) RoleDelete(r *pb.AuthRoleDeleteRequest) (*pb.AuthRoleDelete
 
 		tx.UnsafePutUser(updatedUser)
 
-		as.invalidateCachedPerm(string(user.Name))
 	}
 
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
 	as.lg.Info("deleted a role", zap.String("role-name", r.Role))
 	return &pb.AuthRoleDeleteResponse{}, nil
@@ -790,6 +796,9 @@ func (as *authStore) RoleGrantPermission(r *pb.AuthRoleGrantPermissionRequest) (
 	if r.Perm == nil {
 		return nil, ErrPermissionNotGiven
 	}
+	if !isValidPermissionRange(r.Perm.Key, r.Perm.RangeEnd) {
+		return nil, ErrInvalidAuthMgmt
+	}
 
 	tx := as.be.BatchTx()
 	tx.Lock()
@@ -821,16 +830,15 @@ func (as *authStore) RoleGrantPermission(r *pb.AuthRoleGrantPermissionRequest) (
 
 	tx.UnsafePutRole(role)
 
-	// TODO(mitake): currently single role update invalidates every cache
-	// It should be optimized.
-	as.clearCachedPerm()
-
 	as.commitRevision(tx)
+	as.refreshRangePermCache(tx)
 
 	as.lg.Info(
 		"granted/updated a permission to a user",
 		zap.String("user-name", r.Name),
 		zap.String("permission-name", authpb.Permission_Type_name[int32(r.Perm.PermType)]),
+		zap.ByteString("key", r.Perm.Key),
+		zap.ByteString("range-end", r.Perm.RangeEnd),
 	)
 	return &pb.AuthRoleGrantPermissionResponse{}, nil
 }
@@ -855,7 +863,7 @@ func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeE
 		return ErrAuthOldRevision
 	}
 
-	tx := as.be.BatchTx()
+	tx := as.be.ReadTx()
 	tx.Lock()
 	defer tx.Unlock()
 
@@ -870,7 +878,7 @@ func (as *authStore) isOpPermitted(userName string, revision uint64, key, rangeE
 		return nil
 	}
 
-	if as.isRangeOpPermitted(tx, userName, key, rangeEnd, permTyp) {
+	if as.isRangeOpPermitted(userName, key, rangeEnd, permTyp) {
 		return nil
 	}
 
@@ -897,7 +905,10 @@ func (as *authStore) IsAdminPermitted(authInfo *AuthInfo) error {
 		return ErrUserEmpty
 	}
 
-	u := as.be.GetUser(authInfo.Username)
+	tx := as.be.ReadTx()
+	tx.Lock()
+	defer tx.Unlock()
+	u := tx.UnsafeGetUser(authInfo.Username)
 
 	if u == nil {
 		return ErrUserNotFound
@@ -935,6 +946,8 @@ func NewAuthStore(lg *zap.Logger, be AuthBackend, tp TokenProvider, bcryptCost i
 
 	be.CreateAuthBuckets()
 	tx := be.BatchTx()
+	// We should call LockOutsideApply here, but the txPostLockHoos isn't set
+	// to EtcdServer yet, so it's OK.
 	tx.Lock()
 	enabled := tx.UnsafeReadAuthEnabled()
 	as := &authStore{
@@ -956,6 +969,8 @@ func NewAuthStore(lg *zap.Logger, be AuthBackend, tp TokenProvider, bcryptCost i
 	}
 
 	as.setupMetricsReporter()
+
+	as.refreshRangePermCache(tx)
 
 	tx.Unlock()
 	be.ForceCommit()
@@ -1026,6 +1041,10 @@ func (as *authStore) AuthInfoFromTLS(ctx context.Context) (ai *AuthInfo) {
 }
 
 func (as *authStore) AuthInfoFromCtx(ctx context.Context) (*AuthInfo, error) {
+	if !as.IsAuthEnabled() {
+		return nil, nil
+	}
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, nil

@@ -17,18 +17,20 @@ package lease
 import (
 	"container/heap"
 	"context"
-	"encoding/binary"
 	"errors"
 	"math"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
+	"go.uber.org/zap"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/schema"
-	"go.uber.org/zap"
 )
 
 // NoLease is a special LeaseID representing the absence of a lease.
@@ -180,19 +182,29 @@ type lessor struct {
 	checkpointInterval time.Duration
 	// the interval to check if the expired lease is revoked
 	expiredLeaseRetryInterval time.Duration
+	// whether lessor should always persist remaining TTL (always enabled in v3.6).
+	checkpointPersist bool
+	// cluster is used to adapt lessor logic based on cluster version
+	cluster cluster
+}
+
+type cluster interface {
+	// Version is the cluster-wide minimum major.minor version.
+	Version() *semver.Version
 }
 
 type LessorConfig struct {
 	MinLeaseTTL                int64
 	CheckpointInterval         time.Duration
 	ExpiredLeasesRetryInterval time.Duration
+	CheckpointPersist          bool
 }
 
-func NewLessor(lg *zap.Logger, b backend.Backend, cfg LessorConfig) Lessor {
-	return newLessor(lg, b, cfg)
+func NewLessor(lg *zap.Logger, b backend.Backend, cluster cluster, cfg LessorConfig) Lessor {
+	return newLessor(lg, b, cluster, cfg)
 }
 
-func newLessor(lg *zap.Logger, b backend.Backend, cfg LessorConfig) *lessor {
+func newLessor(lg *zap.Logger, b backend.Backend, cluster cluster, cfg LessorConfig) *lessor {
 	checkpointInterval := cfg.CheckpointInterval
 	expiredLeaseRetryInterval := cfg.ExpiredLeasesRetryInterval
 	if checkpointInterval == 0 {
@@ -210,11 +222,13 @@ func newLessor(lg *zap.Logger, b backend.Backend, cfg LessorConfig) *lessor {
 		minLeaseTTL:               cfg.MinLeaseTTL,
 		checkpointInterval:        checkpointInterval,
 		expiredLeaseRetryInterval: expiredLeaseRetryInterval,
+		checkpointPersist:         cfg.CheckpointPersist,
 		// expiredC is a small buffered chan to avoid unnecessary blocking.
 		expiredC: make(chan []*Lease, 16),
 		stopC:    make(chan struct{}),
 		doneC:    make(chan struct{}),
 		lg:       lg,
+		cluster:  cluster,
 	}
 	l.initAndRecover()
 
@@ -272,15 +286,15 @@ func (le *lessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
 		revokec: make(chan struct{}),
 	}
 
+	if l.ttl < le.minLeaseTTL {
+		l.ttl = le.minLeaseTTL
+	}
+
 	le.mu.Lock()
 	defer le.mu.Unlock()
 
 	if _, ok := le.leaseMap[id]; ok {
 		return nil, ErrLeaseExists
-	}
-
-	if l.ttl < le.minLeaseTTL {
-		l.ttl = le.minLeaseTTL
 	}
 
 	if le.isPrimary() {
@@ -312,6 +326,12 @@ func (le *lessor) Revoke(id LeaseID) error {
 		le.mu.Unlock()
 		return ErrLeaseNotFound
 	}
+
+	// We shouldn't delete the lease inside the transaction lock, otherwise
+	// it may lead to deadlock with Grant or Checkpoint operations, which
+	// acquire the le.mu firstly and then the batchTx lock.
+	delete(le.leaseMap, id)
+
 	defer close(l.revokec)
 	// unlock before doing external work
 	le.mu.Unlock()
@@ -330,9 +350,6 @@ func (le *lessor) Revoke(id LeaseID) error {
 		txn.DeleteRange([]byte(key), nil)
 	}
 
-	le.mu.Lock()
-	defer le.mu.Unlock()
-	delete(le.leaseMap, l.ID)
 	// lease deletion needs to be in the same backend transaction with the
 	// kv deletion. Or we might end up with not executing the revoke or not
 	// deleting the keys if etcdserver fails in between.
@@ -351,12 +368,24 @@ func (le *lessor) Checkpoint(id LeaseID, remainingTTL int64) error {
 	if l, ok := le.leaseMap[id]; ok {
 		// when checkpointing, we only update the remainingTTL, Promote is responsible for applying this to lease expiry
 		l.remainingTTL = remainingTTL
+		if le.shouldPersistCheckpoints() {
+			l.persistTo(le.b)
+		}
 		if le.isPrimary() {
 			// schedule the next checkpoint as needed
 			le.scheduleCheckpointIfNeeded(l)
 		}
 	}
 	return nil
+}
+
+func (le *lessor) shouldPersistCheckpoints() bool {
+	cv := le.cluster.Version()
+	return le.checkpointPersist || (cv != nil && greaterOrEqual(*cv, version.V3_6))
+}
+
+func greaterOrEqual(first, second semver.Version) bool {
+	return !version.LessThan(first, second)
 }
 
 // Renew renews an existing lease. If the given lease does not exist or
@@ -446,6 +475,7 @@ func (le *lessor) Promote(extend time.Duration) {
 		l.refresh(extend)
 		item := &LeaseWithTime{id: l.ID, time: l.expiry}
 		le.leaseExpiredNotifier.RegisterOrUpdate(item)
+		le.scheduleCheckpointIfNeeded(l)
 	}
 
 	if len(le.leaseMap) < leaseRevokeRate {
@@ -487,12 +517,6 @@ func (le *lessor) Promote(extend time.Duration) {
 		le.scheduleCheckpointIfNeeded(l)
 	}
 }
-
-type leasesByExpiry []*Lease
-
-func (le leasesByExpiry) Len() int           { return len(le) }
-func (le leasesByExpiry) Less(i, j int) bool { return le[i].Remaining() < le[j].Remaining() }
-func (le leasesByExpiry) Swap(i, j int)      { le[i], le[j] = le[j], le[i] }
 
 func (le *lessor) Demote() {
 	le.mu.Lock()
@@ -583,12 +607,15 @@ func (le *lessor) Stop() {
 func (le *lessor) runLoop() {
 	defer close(le.doneC)
 
+	delayTicker := time.NewTicker(500 * time.Millisecond)
+	defer delayTicker.Stop()
+
 	for {
 		le.revokeExpiredLeases()
 		le.checkpointScheduledLeases()
 
 		select {
-		case <-time.After(500 * time.Millisecond):
+		case <-delayTicker.C:
 		case <-le.stopC:
 			return
 		}
@@ -625,10 +652,10 @@ func (le *lessor) revokeExpiredLeases() {
 // checkpointScheduledLeases finds all scheduled lease checkpoints that are due and
 // submits them to the checkpointer to persist them to the consensus log.
 func (le *lessor) checkpointScheduledLeases() {
-	var cps []*pb.LeaseCheckpoint
-
 	// rate limit
 	for i := 0; i < leaseCheckpointRate/2; i++ {
+		var cps []*pb.LeaseCheckpoint
+
 		le.mu.Lock()
 		if le.isPrimary() {
 			cps = le.findDueScheduledCheckpoints(maxLeaseCheckpointBatchSize)
@@ -652,33 +679,33 @@ func (le *lessor) clearLeaseExpiredNotifier() {
 	le.leaseExpiredNotifier = newLeaseExpiredNotifier()
 }
 
-// expireExists returns true if expiry items exist.
+// expireExists returns "l" which is not nil if expiry items exist.
 // It pops only when expiry item exists.
 // "next" is true, to indicate that it may exist in next attempt.
-func (le *lessor) expireExists() (l *Lease, ok bool, next bool) {
+func (le *lessor) expireExists() (l *Lease, next bool) {
 	if le.leaseExpiredNotifier.Len() == 0 {
-		return nil, false, false
+		return nil, false
 	}
 
-	item := le.leaseExpiredNotifier.Poll()
+	item := le.leaseExpiredNotifier.Peek()
 	l = le.leaseMap[item.id]
 	if l == nil {
 		// lease has expired or been revoked
 		// no need to revoke (nothing is expiry)
 		le.leaseExpiredNotifier.Unregister() // O(log N)
-		return nil, false, true
+		return nil, true
 	}
 	now := time.Now()
 	if now.Before(item.time) /* item.time: expiration time */ {
 		// Candidate expirations are caught up, reinsert this item
 		// and no need to revoke (nothing is expiry)
-		return l, false, false
+		return nil, false
 	}
 
 	// recheck if revoke is complete after retry interval
 	item.time = now.Add(le.expiredLeaseRetryInterval)
 	le.leaseExpiredNotifier.RegisterOrUpdate(item)
-	return l, true, false
+	return l, false
 }
 
 // findExpiredLeases loops leases in the leaseMap until reaching expired limit
@@ -687,12 +714,9 @@ func (le *lessor) findExpiredLeases(limit int) []*Lease {
 	leases := make([]*Lease, 0, 16)
 
 	for {
-		l, ok, next := le.expireExists()
-		if !ok && !next {
+		l, next := le.expireExists()
+		if l == nil && !next {
 			break
-		}
-		if !ok {
-			continue
 		}
 		if next {
 			continue
@@ -716,7 +740,7 @@ func (le *lessor) scheduleCheckpointIfNeeded(lease *Lease) {
 		return
 	}
 
-	if lease.RemainingTTL() > int64(le.checkpointInterval.Seconds()) {
+	if lease.getRemainingTTL() > int64(le.checkpointInterval.Seconds()) {
 		if le.lg != nil {
 			le.lg.Debug("Scheduling lease checkpoint",
 				zap.Int64("leaseID", int64(lease.ID)),
@@ -736,7 +760,7 @@ func (le *lessor) findDueScheduledCheckpoints(checkpointLimit int) []*pb.LeaseCh
 	}
 
 	now := time.Now()
-	cps := []*pb.LeaseCheckpoint{}
+	var cps []*pb.LeaseCheckpoint
 	for le.leaseCheckpointHeap.Len() > 0 && len(cps) < checkpointLimit {
 		lt := le.leaseCheckpointHeap[0]
 		if lt.time.After(now) /* lt.time: next checkpoint time */ {
@@ -769,7 +793,7 @@ func (le *lessor) findDueScheduledCheckpoints(checkpointLimit int) []*pb.LeaseCh
 func (le *lessor) initAndRecover() {
 	tx := le.b.BatchTx()
 
-	tx.Lock()
+	tx.LockOutsideApply()
 	schema.UnsafeCreateLeaseBucket(tx)
 	lpbs := schema.MustUnsafeGetAllLeases(tx)
 	tx.Unlock()
@@ -783,102 +807,16 @@ func (le *lessor) initAndRecover() {
 			ttl: lpb.TTL,
 			// itemSet will be filled in when recover key-value pairs
 			// set expiry to forever, refresh when promoted
-			itemSet: make(map[LeaseItem]struct{}),
-			expiry:  forever,
-			revokec: make(chan struct{}),
+			itemSet:      make(map[LeaseItem]struct{}),
+			expiry:       forever,
+			revokec:      make(chan struct{}),
+			remainingTTL: lpb.RemainingTTL,
 		}
 	}
 	le.leaseExpiredNotifier.Init()
 	heap.Init(&le.leaseCheckpointHeap)
 
 	le.b.ForceCommit()
-}
-
-type Lease struct {
-	ID           LeaseID
-	ttl          int64 // time to live of the lease in seconds
-	remainingTTL int64 // remaining time to live in seconds, if zero valued it is considered unset and the full ttl should be used
-	// expiryMu protects concurrent accesses to expiry
-	expiryMu sync.RWMutex
-	// expiry is time when lease should expire. no expiration when expiry.IsZero() is true
-	expiry time.Time
-
-	// mu protects concurrent accesses to itemSet
-	mu      sync.RWMutex
-	itemSet map[LeaseItem]struct{}
-	revokec chan struct{}
-}
-
-func (l *Lease) expired() bool {
-	return l.Remaining() <= 0
-}
-
-func (l *Lease) persistTo(b backend.Backend) {
-	lpb := leasepb.Lease{ID: int64(l.ID), TTL: l.ttl, RemainingTTL: l.remainingTTL}
-	tx := b.BatchTx()
-	tx.Lock()
-	defer tx.Unlock()
-	schema.MustUnsafePutLease(tx, &lpb)
-}
-
-// TTL returns the TTL of the Lease.
-func (l *Lease) TTL() int64 {
-	return l.ttl
-}
-
-// RemainingTTL returns the last checkpointed remaining TTL of the lease.
-// TODO(jpbetz): do not expose this utility method
-func (l *Lease) RemainingTTL() int64 {
-	if l.remainingTTL > 0 {
-		return l.remainingTTL
-	}
-	return l.ttl
-}
-
-// refresh refreshes the expiry of the lease.
-func (l *Lease) refresh(extend time.Duration) {
-	newExpiry := time.Now().Add(extend + time.Duration(l.RemainingTTL())*time.Second)
-	l.expiryMu.Lock()
-	defer l.expiryMu.Unlock()
-	l.expiry = newExpiry
-}
-
-// forever sets the expiry of lease to be forever.
-func (l *Lease) forever() {
-	l.expiryMu.Lock()
-	defer l.expiryMu.Unlock()
-	l.expiry = forever
-}
-
-// Keys returns all the keys attached to the lease.
-func (l *Lease) Keys() []string {
-	l.mu.RLock()
-	keys := make([]string, 0, len(l.itemSet))
-	for k := range l.itemSet {
-		keys = append(keys, k.Key)
-	}
-	l.mu.RUnlock()
-	return keys
-}
-
-// Remaining returns the remaining time of the lease.
-func (l *Lease) Remaining() time.Duration {
-	l.expiryMu.RLock()
-	defer l.expiryMu.RUnlock()
-	if l.expiry.IsZero() {
-		return time.Duration(math.MaxInt64)
-	}
-	return time.Until(l.expiry)
-}
-
-type LeaseItem struct {
-	Key string
-}
-
-func int64ToBytes(n int64) []byte {
-	bytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(bytes, uint64(n))
-	return bytes
 }
 
 // FakeLessor is a fake implementation of Lessor interface.

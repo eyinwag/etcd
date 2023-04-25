@@ -16,6 +16,7 @@ package etcdserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,8 +32,6 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/fileutil"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
-	"go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/config"
 	"go.etcd.io/etcd/server/v3/etcdserver/api"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/membership"
@@ -40,16 +39,19 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2discovery"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v2store"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
 	"go.etcd.io/etcd/server/v3/etcdserver/cindex"
+	servererrors "go.etcd.io/etcd/server/v3/etcdserver/errors"
 	serverstorage "go.etcd.io/etcd/server/v3/storage"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
-
 	if cfg.MaxRequestBytes > recommendedMaxRequestBytes {
 		cfg.Logger.Warn(
 			"exceeded recommended request limit",
@@ -79,9 +81,7 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 	if err != nil {
 		return nil, err
 	}
-	var (
-		bwal *bootstrappedWAL
-	)
+	var bwal *bootstrappedWAL
 
 	if haveWAL {
 		if err = fileutil.IsDirWriteable(cfg.WALDir()); err != nil {
@@ -102,8 +102,7 @@ func bootstrap(cfg config.ServerConfig) (b *bootstrappedServer, err error) {
 		return nil, err
 	}
 
-	err = cluster.Finalize(cfg, s)
-	if err != nil {
+	if err = cluster.Finalize(cfg, s); err != nil {
 		backend.Close()
 		return nil, err
 	}
@@ -220,9 +219,7 @@ func bootstrapBackend(cfg config.ServerConfig, haveWAL bool, st v2store.Store, s
 	cfg.Logger.Debug("restore consistentIndex", zap.Uint64("index", ci.ConsistentIndex()))
 
 	// TODO(serathius): Implement schema setup in fresh storage
-	var (
-		snapshot *raftpb.Snapshot
-	)
+	var snapshot *raftpb.Snapshot
 	if haveWAL {
 		snapshot, be, err = recoverSnapshot(cfg, st, be, beExist, beHooks, ci, ss)
 		if err != nil {
@@ -230,8 +227,7 @@ func bootstrapBackend(cfg config.ServerConfig, haveWAL bool, st v2store.Store, s
 		}
 	}
 	if beExist {
-		err = schema.Validate(cfg.Logger, be.BatchTx())
-		if err != nil {
+		if err = schema.Validate(cfg.Logger, be.ReadTx()); err != nil {
 			cfg.Logger.Error("Failed to validate schema", zap.Error(err))
 			return nil, err
 		}
@@ -297,7 +293,7 @@ func bootstrapExistingClusterNoWAL(cfg config.ServerConfig, prt http.RoundTrippe
 	if err := membership.ValidateClusterAndAssignIDs(cfg.Logger, cl, existingCluster); err != nil {
 		return nil, fmt.Errorf("error validating peerURLs %s: %v", existingCluster, err)
 	}
-	if !isCompatibleWithCluster(cfg.Logger, cl, cl.MemberByName(cfg.Name).ID, prt) {
+	if !isCompatibleWithCluster(cfg.Logger, cl, cl.MemberByName(cfg.Name).ID, prt, cfg.ReqTimeout()) {
 		return nil, fmt.Errorf("incompatible with current running cluster")
 	}
 	scaleUpLearners := false
@@ -328,9 +324,15 @@ func bootstrapNewClusterNoWAL(cfg config.ServerConfig, prt http.RoundTripper) (*
 	}
 	if cfg.ShouldDiscover() {
 		var str string
-		str, err = v2discovery.JoinCluster(cfg.Logger, cfg.DiscoveryURL, cfg.DiscoveryProxy, m.ID, cfg.InitialPeerURLsMap.String())
+		if cfg.DiscoveryURL != "" {
+			cfg.Logger.Warn("V2 discovery is deprecated!")
+			str, err = v2discovery.JoinCluster(cfg.Logger, cfg.DiscoveryURL, cfg.DiscoveryProxy, m.ID, cfg.InitialPeerURLsMap.String())
+		} else {
+			cfg.Logger.Info("Bootstrapping cluster using v3 discovery.")
+			str, err = v3discovery.JoinCluster(cfg.Logger, &cfg.DiscoveryCfg, m.ID, cfg.InitialPeerURLsMap.String())
+		}
 		if err != nil {
-			return nil, &DiscoveryError{Op: "join", Err: err}
+			return nil, &servererrors.DiscoveryError{Op: "join", Err: err}
 		}
 		var urlsmap types.URLsMap
 		urlsmap, err = types.NewURLsMap(str)
@@ -385,7 +387,7 @@ func recoverSnapshot(cfg config.ServerConfig, st v2store.Store, be backend.Backe
 	// snapshot files can be orphaned if etcd crashes after writing them but before writing the corresponding
 	// bwal log entries
 	snapshot, err := ss.LoadNewestAvailable(walSnaps)
-	if err != nil && err != snap.ErrNoSnapshot {
+	if err != nil && !errors.Is(err, snap.ErrNoSnapshot) {
 		return nil, be, err
 	}
 
@@ -408,6 +410,10 @@ func recoverSnapshot(cfg config.ServerConfig, st v2store.Store, be backend.Backe
 		if be, err = serverstorage.RecoverSnapshotBackend(cfg, be, *snapshot, beExist, beHooks); err != nil {
 			cfg.Logger.Panic("failed to recover v3 backend from snapshot", zap.Error(err))
 		}
+		// A snapshot db may have already been recovered, and the old db should have
+		// already been closed in this case, so we should set the backend again.
+		ci.SetBackend(be)
+
 		s1, s2 := be.Size(), be.SizeInUse()
 		cfg.Logger.Info(
 			"recovered v3 backend from snapshot",
@@ -601,7 +607,7 @@ func openWALFromSnapshot(cfg config.ServerConfig, snapshot *raftpb.Snapshot) (*w
 		if err != nil {
 			w.Close()
 			// we can only repair ErrUnexpectedEOF and we never repair twice.
-			if repaired || err != io.ErrUnexpectedEOF {
+			if repaired || !errors.Is(err, io.ErrUnexpectedEOF) {
 				cfg.Logger.Fatal("failed to read WAL, cannot be repaired", zap.Error(err))
 			}
 			if !wal.Repair(cfg.Logger, cfg.WALDir()) {

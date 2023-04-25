@@ -15,6 +15,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,13 +25,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/pkg/v3/expect"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
-func TestCtlV3Snapshot(t *testing.T)        { testCtl(t, snapshotTest) }
-func TestCtlV3SnapshotEtcdutl(t *testing.T) { testCtl(t, snapshotTest, withEtcdutl()) }
+func TestCtlV3Snapshot(t *testing.T) { testCtl(t, snapshotTest) }
 
 func snapshotTest(cx ctlCtx) {
 	maintenanceInitKeys(cx)
@@ -62,8 +64,7 @@ func snapshotTest(cx ctlCtx) {
 	}
 }
 
-func TestCtlV3SnapshotCorrupt(t *testing.T)        { testCtl(t, snapshotCorruptTest) }
-func TestCtlV3SnapshotCorruptEtcdutl(t *testing.T) { testCtl(t, snapshotCorruptTest, withEtcdutl()) }
+func TestCtlV3SnapshotCorrupt(t *testing.T) { testCtl(t, snapshotCorruptTest) }
 
 func snapshotCorruptTest(cx ctlCtx) {
 	fpath := filepath.Join(cx.t.TempDir(), "snapshot")
@@ -91,16 +92,13 @@ func snapshotCorruptTest(cx ctlCtx) {
 			fpath),
 		cx.envMap,
 		"expected sha256")
-
-	if serr != nil {
-		cx.t.Fatal(serr)
-	}
+	require.ErrorContains(cx.t, serr, "Error: expected sha256")
 }
 
-// This test ensures that the snapshot status does not modify the snapshot file
-func TestCtlV3SnapshotStatusBeforeRestore(t *testing.T) { testCtl(t, snapshotStatusBeforeRestoreTest) }
-func TestCtlV3SnapshotStatusBeforeRestoreEtcdutl(t *testing.T) {
-	testCtl(t, snapshotStatusBeforeRestoreTest, withEtcdutl())
+// TestCtlV3SnapshotStatusBeforeRestore ensures that the snapshot
+// status does not modify the snapshot file
+func TestCtlV3SnapshotStatusBeforeRestore(t *testing.T) {
+	testCtl(t, snapshotStatusBeforeRestoreTest)
 }
 
 func snapshotStatusBeforeRestoreTest(cx ctlCtx) {
@@ -159,12 +157,11 @@ func getSnapshotStatus(cx ctlCtx, fpath string) (snapshot.Status, error) {
 	return resp, nil
 }
 
-func TestIssue6361(t *testing.T)        { testIssue6361(t, false) }
-func TestIssue6361etcdutl(t *testing.T) { testIssue6361(t, true) }
+func TestIssue6361(t *testing.T) { testIssue6361(t) }
 
 // TestIssue6361 ensures new member that starts with snapshot correctly
 // syncs up with other members and serve correct data.
-func testIssue6361(t *testing.T, etcdutl bool) {
+func testIssue6361(t *testing.T) {
 	{
 		// This tests is pretty flaky on semaphoreci as of 2021-01-10.
 		// TODO: Remove when the flakiness source is identified.
@@ -174,14 +171,11 @@ func testIssue6361(t *testing.T, etcdutl bool) {
 	}
 
 	e2e.BeforeTest(t)
-	os.Setenv("ETCDCTL_API", "3")
-	defer os.Unsetenv("ETCDCTL_API")
 
-	epc, err := e2e.NewEtcdProcessCluster(t, &e2e.EtcdProcessClusterConfig{
-		ClusterSize:  1,
-		InitialToken: "new",
-		KeepDataDir:  true,
-	})
+	epc, err := e2e.NewEtcdProcessCluster(context.TODO(), t,
+		e2e.WithClusterSize(1),
+		e2e.WithKeepDataDir(true),
+	)
 	if err != nil {
 		t.Fatalf("could not start etcd process cluster (%v)", err)
 	}
@@ -192,7 +186,7 @@ func testIssue6361(t *testing.T, etcdutl bool) {
 	}()
 
 	dialTimeout := 10 * time.Second
-	prefixArgs := []string{e2e.CtlBinPath, "--endpoints", strings.Join(epc.EndpointsV3(), ","), "--dial-timeout", dialTimeout.String()}
+	prefixArgs := []string{e2e.BinPath.Etcdctl, "--endpoints", strings.Join(epc.EndpointsGRPC(), ","), "--dial-timeout", dialTimeout.String()}
 
 	t.Log("Writing some keys...")
 	kvs := []kv{{"foo1", "val1"}, {"foo2", "val2"}, {"foo3", "val3"}}
@@ -218,14 +212,8 @@ func testIssue6361(t *testing.T, etcdutl bool) {
 	}
 
 	newDataDir := filepath.Join(t.TempDir(), "test.data")
-
-	uctlBinPath := e2e.CtlBinPath
-	if etcdutl {
-		uctlBinPath = e2e.UtlBinPath
-	}
-
 	t.Log("etcdctl restoring the snapshot...")
-	err = e2e.SpawnWithExpect([]string{uctlBinPath, "snapshot", "restore", fpath, "--name", epc.Procs[0].Config().Name, "--initial-cluster", epc.Procs[0].Config().InitialCluster, "--initial-cluster-token", epc.Procs[0].Config().InitialToken, "--initial-advertise-peer-urls", epc.Procs[0].Config().Purl.String(), "--data-dir", newDataDir}, "added member")
+	err = e2e.SpawnWithExpect([]string{e2e.BinPath.Etcdutl, "snapshot", "restore", fpath, "--name", epc.Procs[0].Config().Name, "--initial-cluster", epc.Procs[0].Config().InitialCluster, "--initial-cluster-token", epc.Procs[0].Config().InitialToken, "--initial-advertise-peer-urls", epc.Procs[0].Config().PeerURL.String(), "--data-dir", newDataDir}, "added member")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +225,7 @@ func testIssue6361(t *testing.T, etcdutl bool) {
 			epc.Procs[0].Config().Args[i+1] = newDataDir
 		}
 	}
-	if err = epc.Procs[0].Restart(); err != nil {
+	if err = epc.Procs[0].Restart(context.TODO()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -276,7 +264,7 @@ func testIssue6361(t *testing.T, etcdutl bool) {
 		t.Fatal(err)
 	}
 
-	prefixArgs = []string{e2e.CtlBinPath, "--endpoints", clientURL, "--dial-timeout", dialTimeout.String()}
+	prefixArgs = []string{e2e.BinPath.Etcdctl, "--endpoints", clientURL, "--dial-timeout", dialTimeout.String()}
 
 	t.Log("Ensuring added member has data from incoming snapshot...")
 	for i := range kvs {
@@ -292,13 +280,11 @@ func testIssue6361(t *testing.T, etcdutl bool) {
 	t.Log("Test logic done")
 }
 
-// For storageVersion to be stored, all fields expected 3.6 fields need to be set. This happens after first WAL snapshot.
+// TestCtlV3SnapshotVersion is for storageVersion to be stored, all fields
+// expected 3.6 fields need to be set. This happens after first WAL snapshot.
 // In this test we lower SnapshotCount to 1 to ensure WAL snapshot is triggered.
 func TestCtlV3SnapshotVersion(t *testing.T) {
-	testCtl(t, snapshotVersionTest, withCfg(e2e.EtcdProcessClusterConfig{SnapshotCount: 1}))
-}
-func TestCtlV3SnapshotVersionEtcdutl(t *testing.T) {
-	testCtl(t, snapshotVersionTest, withEtcdutl(), withCfg(e2e.EtcdProcessClusterConfig{SnapshotCount: 1}))
+	testCtl(t, snapshotVersionTest, withCfg(*e2e.NewConfig(e2e.WithSnapshotCount(1))))
 }
 
 func snapshotVersionTest(cx ctlCtx) {

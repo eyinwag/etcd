@@ -28,8 +28,8 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/pkg/v3/httputil"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	stats "go.etcd.io/etcd/server/v3/etcdserver/api/v2stats"
+	"go.etcd.io/raft/v3/raftpb"
 
 	"github.com/coreos/go-semver/semver"
 	"go.uber.org/zap"
@@ -574,7 +574,7 @@ func (cr *streamReader) dial(t streamType) (io.ReadCloser, error) {
 			zap.String("address", uu.String()),
 		)
 	}
-	req, err := http.NewRequest("GET", uu.String(), nil)
+	req, err := http.NewRequest(http.MethodGet, uu.String(), nil)
 	if err != nil {
 		cr.picker.unreachable(u)
 		return nil, fmt.Errorf("failed to make http request to %v (%v)", u, err)

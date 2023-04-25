@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 ROOT_MODULE="go.etcd.io/etcd"
 
 if [[ "$(go list)" != "${ROOT_MODULE}/v3" ]]; then
@@ -71,7 +73,7 @@ function relativePath {
   local commonPart=$source
   local result=""
 
-  while [[ "${target#$commonPart}" == "${target}" ]]; do
+  while [[ "${target#"$commonPart"}" == "${target}" ]]; do
     # no match, means that candidate common part is not correct
     # go up one level (reduce common part)
     commonPart="$(dirname "$commonPart")"
@@ -90,7 +92,7 @@ function relativePath {
 
   # since we now have identified the common part,
   # compute the non-common part
-  local forwardPart="${target#$commonPart}"
+  local forwardPart="${target#"$commonPart"}"
 
   # and now stick all parts together
   if [[ -n $result ]] && [[ -n $forwardPart ]]; then
@@ -105,10 +107,10 @@ function relativePath {
 
 ####   Discovery of files/packages within a go module #####
 
-# go_srcs_in_module [package]
+# go_srcs_in_module
 # returns list of all not-generated go sources in the current (dir) module.
 function go_srcs_in_module {
-  go fmt -n "$1"  | grep -Eo "([^ ]*)$" | grep -vE "(\\_test.go|\\.pb\\.go|\\.pb\\.gw.go)"
+  go list -f "{{with \$c:=.}}{{range \$f:=\$c.GoFiles  }}{{\$c.Dir}}/{{\$f}}{{\"\n\"}}{{end}}{{range \$f:=\$c.TestGoFiles  }}{{\$c.Dir}}/{{\$f}}{{\"\n\"}}{{end}}{{range \$f:=\$c.XTestGoFiles  }}{{\$c.Dir}}/{{\$f}}{{\"\n\"}}{{end}}{{end}}" ./... | grep -vE "(\\.pb\\.go|\\.pb\\.gw.go)"
 }
 
 # pkgs_in_module [optional:package_pattern]
@@ -164,7 +166,7 @@ function run_for_module {
 }
 
 function module_dirs() {
-  echo "api pkg raft client/pkg client/v2 client/v3 server etcdutl etcdctl tests ."
+  echo "api pkg client/pkg client/internal/v2 client/v3 server etcdutl etcdctl tests ."
 }
 
 # maybe_run [cmd...] runs given command depending on the DRY_RUN flag.
@@ -180,7 +182,6 @@ function modules() {
   modules=(
     "${ROOT_MODULE}/api/v3"
     "${ROOT_MODULE}/pkg/v3"
-    "${ROOT_MODULE}/raft/v3"
     "${ROOT_MODULE}/client/pkg/v3"
     "${ROOT_MODULE}/client/v2"
     "${ROOT_MODULE}/client/v3"
@@ -213,7 +214,7 @@ function run_for_modules {
 }
 
 junitFilenamePrefix() {
-  if [[ -z "${JUNIT_REPORT_DIR}" ]]; then
+  if [[ -z "${JUNIT_REPORT_DIR:-}" ]]; then
     echo ""
     return
   fi
@@ -223,7 +224,7 @@ junitFilenamePrefix() {
 }
 
 function produce_junit_xmlreport {
-  local -r junit_filename_prefix=$1
+  local -r junit_filename_prefix=${1:-}
   if [[ -z "${junit_filename_prefix}" ]]; then
     return
   fi
@@ -233,7 +234,7 @@ function produce_junit_xmlreport {
 
   # Ensure that gotestsum is run without cross-compiling
   run_go_tool gotest.tools/gotestsum --junitfile "${junit_xml_filename}" --raw-command cat "${junit_filename_prefix}"*.stdout || exit 1
-  if [ "${VERBOSE}" != "1" ]; then
+  if [ "${VERBOSE:-}" != "1" ]; then
     rm "${junit_filename_prefix}"*.stdout
   fi
 
@@ -291,7 +292,7 @@ function go_test {
 
   junit_filename_prefix=$(junitFilenamePrefix)
 
-  if [ "${VERBOSE}" == "1" ]; then
+  if [ "${VERBOSE:-}" == "1" ]; then
     goTestFlags="-v"
   fi
 
@@ -316,10 +317,10 @@ function go_test {
     additional_flags=$(${flags_for_package_func} ${pkg})
 
     # shellcheck disable=SC2206
-    local cmd=( go test ${goTestFlags} ${additional_flags} "$@" ${pkg} )
+    local cmd=( go test ${goTestFlags} ${additional_flags} ${pkg} "$@" )
 
     # shellcheck disable=SC2086
-    if ! run env ${goTestEnv} "${cmd[@]}" | tee ${junit_filename_prefix:+"${junit_filename_prefix}.stdout"} | grep --binary-files=text "${go_test_grep_pattern}" ; then
+    if ! run env ${goTestEnv} ETCD_VERIFY="${ETCD_VERIFY}" "${cmd[@]}" | tee ${junit_filename_prefix:+"${junit_filename_prefix}.stdout"} | grep --binary-files=text "${go_test_grep_pattern}" ; then
       if [ "${mode}" != "keep_going" ]; then
         produce_junit_xmlreport "${junit_filename_prefix}"
         return 2
@@ -353,23 +354,27 @@ function tool_exists {
   fi
 }
 
-# Ensure gobin is available, as it runs majority of the tools
-if ! command -v "gobin" >/dev/null; then
-    GOARCH="" run env GO111MODULE=off go get github.com/myitcv/gobin || exit 1
-fi
-
 # tool_get_bin [tool] - returns absolute path to a tool binary (or returns error)
 function tool_get_bin {
-  tool_exists "gobin" "GO111MODULE=off go get github.com/myitcv/gobin" || return 2
-
   local tool="$1"
+  local pkg_part="$1"
   if [[ "$tool" == *"@"* ]]; then
+    pkg_part=$(echo "${tool}" | cut -d'@' -f1)
     # shellcheck disable=SC2086
-    run gobin ${GOBINARGS:-} -p "${tool}" || return 2
+    run go install ${GOBINARGS:-} "${tool}" || return 2
   else
     # shellcheck disable=SC2086
-    run_for_module ./tools/mod run gobin ${GOBINARGS:-} -p -m --mod=readonly "${tool}" || return 2
+    run_for_module ./tools/mod run go install ${GOBINARGS:-} "${tool}" || return 2
   fi
+
+  # remove the version suffix, such as removing "/v3" from "go.etcd.io/etcd/v3".
+  local cmd_base_name
+  cmd_base_name=$(basename "${pkg_part}")
+  if [[ ${cmd_base_name} =~ ^v[0-9]*$ ]]; then
+    pkg_part=$(dirname "${pkg_part}")
+  fi
+
+  run_for_module ./tools/mod go list -f '{{.Target}}' "${pkg_part}"
 }
 
 # tool_pkg_dir [pkg] - returns absolute path to a directory that stores given pkg.
@@ -382,6 +387,7 @@ function tool_pkg_dir {
 function run_go_tool {
   local cmdbin
   if ! cmdbin=$(GOARCH="" tool_get_bin "${1}"); then
+    log_warning "Failed to install tool '${1}'"
     return 2
   fi
   shift 1
@@ -406,14 +412,16 @@ function assert_no_git_modifications {
 #  - no differencing commits in relation to the origin/$branch
 function git_assert_branch_in_sync {
   local branch
-  branch=$(run git rev-parse --abbrev-ref HEAD)
   # TODO: When git 2.22 popular, change to:
   # branch=$(git branch --show-current)
+  branch=$(run git rev-parse --abbrev-ref HEAD)
+  log_callout "Verify the current branch '${branch}' is clean"
   if [[ $(run git status --porcelain --untracked-files=no) ]]; then
     log_error "The workspace in '$(pwd)' for branch: ${branch} has uncommitted changes"
     log_error "Consider cleaning up / renaming this directory or (cd $(pwd) && git reset --hard)"
     return 2
   fi
+  log_callout "Verify the current branch '${branch}' is in sync with the 'origin/${branch}'"
   if [ -n "${branch}" ]; then
     ref_local=$(run git rev-parse "${branch}")
     ref_origin=$(run git rev-parse "origin/${branch}")

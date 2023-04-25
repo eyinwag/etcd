@@ -1,15 +1,14 @@
 # etcd
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/etcd-io/etcd?style=flat-square)](https://goreportcard.com/report/github.com/etcd-io/etcd)
-[![Coverage](https://codecov.io/gh/etcd-io/etcd/branch/master/graph/badge.svg)](https://codecov.io/gh/etcd-io/etcd)
+[![Coverage](https://codecov.io/gh/etcd-io/etcd/branch/main/graph/badge.svg)](https://app.codecov.io/gh/etcd-io/etcd/tree/main)
 [![Tests](https://github.com/etcd-io/etcd/actions/workflows/tests.yaml/badge.svg)](https://github.com/etcd-io/etcd/actions/workflows/tests.yaml)
-[![asset-transparency](https://github.com/etcd-io/etcd/actions/workflows/asset-transparency.yaml/badge.svg)](https://github.com/etcd-io/etcd/actions/workflows/asset-transparency.yaml)
 [![codeql-analysis](https://github.com/etcd-io/etcd/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/etcd-io/etcd/actions/workflows/codeql-analysis.yml)
-[![self-hosted-linux-arm64-graviton2-tests](https://github.com/etcd-io/etcd/actions/workflows/self-hosted-linux-arm64-graviton2-tests.yml/badge.svg)](https://github.com/etcd-io/etcd/actions/workflows/self-hosted-linux-arm64-graviton2-tests.yml)
 [![Docs](https://img.shields.io/badge/docs-latest-green.svg)](https://etcd.io/docs)
 [![Godoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://godoc.org/github.com/etcd-io/etcd)
 [![Releases](https://img.shields.io/github/release/etcd-io/etcd/all.svg?style=flat-square)](https://github.com/etcd-io/etcd/releases)
 [![LICENSE](https://img.shields.io/github/license/etcd-io/etcd.svg?style=flat-square)](https://github.com/etcd-io/etcd/blob/main/LICENSE)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/etcd-io/etcd/badge)](https://api.securityscorecards.dev/projects/github.com/etcd-io/etcd)
 
 **Note**: The `main` branch may be in an *unstable or even broken state* during development. For stable versions, see [releases][github-release].
 
@@ -24,7 +23,7 @@ etcd is a distributed reliable key-value store for the most critical data of a d
 
 etcd is written in Go and uses the [Raft][] consensus algorithm to manage a highly-available replicated log.
 
-etcd is used [in production by many companies](./ADOPTERS.md), and the development team stands behind it in critical deployment scenarios, where etcd is frequently teamed with applications such as [Kubernetes][k8s], [locksmith][], [vulcand][], [Doorman][], and many others. Reliability is further ensured by [**rigorous testing**](https://github.com/etcd-io/etcd/tree/main/tests/functional).
+etcd is used [in production by many companies](./ADOPTERS.md), and the development team stands behind it in critical deployment scenarios, where etcd is frequently teamed with applications such as [Kubernetes][k8s], [locksmith][], [vulcand][], [Doorman][], and many others. Reliability is further ensured by rigorous [**robustness testing**](https://github.com/etcd-io/etcd/tree/main/tests/robustness).
 
 See [etcdctl][etcdctl] for a simple command line client.
 
@@ -35,49 +34,9 @@ See [etcdctl][etcdctl] for a simple command line client.
 [vulcand]: https://github.com/vulcand/vulcand
 [etcdctl]: https://github.com/etcd-io/etcd/tree/main/etcdctl
 
-## Community meetings
-
-etcd contributors and maintainers have monthly (every four weeks) meetings at 11:00 AM (USA Pacific) on Thursday.
-
-An initial agenda will be posted to the [shared Google docs][shared-meeting-notes] a day before each meeting, and everyone is welcome to suggest additional topics or other agendas.
-
-[shared-meeting-notes]: https://docs.google.com/document/d/16XEGyPBisZvmmoIHSZzv__LoyOeluC5a4x353CX0SIM/edit
-
-
-Time:
-- [Jan 10th, 2019 11:00 AM video](https://www.youtube.com/watch?v=0Cphtbd1OSc&feature=youtu.be)
-- [Feb 7th, 2019 11:00 AM video](https://youtu.be/U80b--oAlYM)
-- [Mar 7th, 2019 11:00 AM video](https://youtu.be/w9TI5B7D1zg)
-- [Apr 4th, 2019 11:00 AM video](https://youtu.be/oqQR2XH1L_A)
-- [May 2nd, 2019 11:00 AM video](https://youtu.be/wFwQePuDWVw)
-- [May 30th, 2019 11:00 AM video](https://youtu.be/2t1R5NATYG4)
-- [Jul 11th, 2019 11:00 AM video](https://youtu.be/k_FZEipWD6Y)
-- [Jul 25, 2019 11:00 AM video](https://youtu.be/VSUJTACO93I)
-- [Aug 22, 2019 11:00 AM video](https://youtu.be/6IBQ-VxQmuM)
-- [Sep 19, 2019 11:00 AM video](https://youtu.be/SqfxU9DhBOc)
-- Nov 14, 2019 11:00 AM
-- Dec 12, 2019 11:00 AM
-- Jan 09, 2020 11:00 AM
-- Feb 06, 2020 11:00 AM
-- Mar 05, 2020 11:00 AM
-- Apr 02, 2020 11:00 AM
-- Apr 30, 2020 11:00 AM
-- May 28, 2020 11:00 AM
-- Jun 25, 2020 11:00 AM
-- Jul 23, 2020 11:00 AM
-- Aug 20, 2020 11:00 AM
-- Sep 17, 2020 11:00 AM
-- Oct 15, 2020 11:00 AM
-- Nov 12, 2020 11:00 AM
-- Dec 10, 2020 11:00 AM
-
-Join Hangouts Meet: [meet.google.com/umg-nrxn-qvs](https://meet.google.com/umg-nrxn-qvs)
-
-Join by phone: +1 405-792-0633‬ PIN: ‪299 906‬#
-
 ## Maintainers
 
-[MAINTAINERS](MAINTAINERS) strive to shape an inclusive open source project culture where users are heard and contributors feel respected and empowered. MAINTAINERS maintain productive relationships across different companies and disciplines. Read more about [MAINTAINERS role and responsibilities](GOVERNANCE.md#maintainers).
+[MAINTAINERS](MAINTAINERS) strive to shape an inclusive open source project culture where users are heard and contributors feel respected and empowered. MAINTAINERS maintain productive relationships across different companies and disciplines. Read more about [MAINTAINERS role and responsibilities](Documentation/contributor-guide/community-membership.md#maintainers).
 
 ## Getting started
 
@@ -87,11 +46,8 @@ The easiest way to get etcd is to use one of the pre-built release binaries whic
 
 For more installation guides, please check out [play.etcd.io](http://play.etcd.io) and [operating etcd](https://etcd.io/docs/latest/op-guide).
 
-For those wanting to try the very latest version, [build the latest version of etcd][dl-build] from the `main` branch. This first needs [*Go*](https://golang.org/) installed ([version 1.16+](/go.mod#L3) is required). All development occurs on `main`, including new features and bug fixes. Bug fixes are first targeted at `main` and subsequently ported to release branches, as described in the [branch management][branch-management] guide.
-
 [github-release]: https://github.com/etcd-io/etcd/releases
 [branch-management]: https://etcd.io/docs/latest/branch_management
-[dl-build]: https://etcd.io/docs/latest/install/#build-from-source
 
 ### Running etcd
 
@@ -108,12 +64,6 @@ The etcd command can be simply run as such if it is moved to the system path as 
 ```bash
 mv /tmp/etcd-download-test/etcd /usr/local/bin/
 etcd
-```
-
-If etcd is [built from the main branch][dl-build], run it as below:
-
-```bash
-./bin/etcd
 ```
 
 This will bring up etcd listening on port 2379 for client communication and on port 2380 for server-to-server communication.
@@ -184,18 +134,36 @@ Now it's time to dig into the full etcd API and other guides.
 
 ## Contact
 
-- Mailing list: [etcd-dev](https://groups.google.com/forum/?hl=en#!forum/etcd-dev)
-- IRC: #[etcd](irc://irc.freenode.org:6667/#etcd) on freenode.org
-- Planning/Roadmap: [milestones](https://github.com/etcd-io/etcd/milestones), [roadmap](./ROADMAP.md)
-- Bugs: [issues](https://github.com/etcd-io/etcd/issues)
+- Email: [etcd-dev](https://groups.google.com/forum/?hl=en#!forum/etcd-dev)
+- Slack: [#etcd](https://kubernetes.slack.com/messages/C3HD8ARJ5/details/) channel on Kubernetes ([get an invite](http://slack.kubernetes.io/))
+- [Community meetings](#Community-meetings)
+
+### Community meetings
+
+etcd contributors and maintainers have monthly (every four weeks) meetings at 11:00 AM (USA Pacific) on Thursday.
+
+An initial agenda will be posted to the [shared Google docs][shared-meeting-notes] a day before each meeting, and everyone is welcome to suggest additional topics or other agendas.
+
+Meeting recordings are uploaded to official etcd [YouTube channel].
+
+Get calendar invitation by joining [etcd-dev](https://groups.google.com/forum/?hl=en#!forum/etcd-dev) mailing group.
+
+Join Hangouts Meet: [meet.google.com/umg-nrxn-qvs](https://meet.google.com/umg-nrxn-qvs)
+
+Join by phone: +1 405-792-0633‬ PIN: ‪299 906‬#
+
+[shared-meeting-notes]: https://docs.google.com/document/d/16XEGyPBisZvmmoIHSZzv__LoyOeluC5a4x353CX0SIM/edit
+[YouTube channel]: https://www.youtube.com/channel/UC7tUWR24I5AR9NMsG-NYBlg
 
 ## Contributing
 
-See [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow.
+See [CONTRIBUTING](CONTRIBUTING.md) for details on setting up your development environment, submitting patches and the contribution workflow.
+
+Please refer to [community-membership.md](Documentation/contributor-guide/community-membership.md#member) for information on becoming an etcd project member.  We welcome and look forward to your contributions to the project!
 
 ## Reporting bugs
 
-See [reporting bugs](https://etcd.io/docs/latest/reporting_bugs/) for details about reporting any issues.
+See [reporting bugs](https://github.com/etcd-io/etcd/blob/main/Documentation/contributor-guide/reporting_bugs.md) for details about reporting any issues.
 
 ## Reporting a security vulnerability
 
@@ -203,16 +171,24 @@ See [security disclosure and release process](security/README.md) for details on
 
 ## Issue and PR management
 
-See [issue triage guidelines](https://etcd.io/docs/current/triage/issues/) for details on how issues are managed.
+See [issue triage guidelines](https://github.com/etcd-io/etcd/blob/main/Documentation/contributor-guide/triage_issues.md) for details on how issues are managed.
 
-See [PR management](https://etcd.io/docs/current/triage/prs/) for guidelines on how pull requests are managed.
+See [PR management](https://github.com/etcd-io/etcd/blob/main/Documentation/contributor-guide/triage_prs.md) for guidelines on how pull requests are managed.
 
 ## etcd Emeritus Maintainers
 
-These emeritus maintainers dedicated a part of their career to etcd and reviewed code, triaged bugs, and pushed the project forward over a substantial period of time. Their contribution is greatly appreciated.
+These emeritus maintainers dedicated a part of their career to etcd and reviewed code, triaged bugs and pushed the project forward over a substantial period of time. Their contribution is greatly appreciated.
 
 * Fanmin Shi
 * Anthony Romano
+* Brandon Philips
+* Joe Betz
+* Gyuho Lee
+* Jingyi Hu
+* Wenjia Zhang
+* Xiang Li
+* Ben Darnell
+* Sam Batschelet
 
 ### License
 

@@ -3,7 +3,8 @@
 # Generate all etcd protobuf bindings.
 # Run from repository root directory named etcd.
 #
-set -e
+set -euo pipefail
+
 shopt -s globstar
 
 if ! [[ "$0" =~ scripts/genproto.sh ]]; then
@@ -23,6 +24,7 @@ GRPC_GATEWAY_BIN=$(tool_get_bin github.com/grpc-ecosystem/grpc-gateway/protoc-ge
 SWAGGER_BIN=$(tool_get_bin github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger)
 GOGOPROTO_ROOT="$(tool_pkg_dir github.com/gogo/protobuf/proto)/.."
 GRPC_GATEWAY_ROOT="$(tool_pkg_dir github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway)/.."
+RAFT_ROOT="$(tool_pkg_dir go.etcd.io/raft/v3/raftpb)/.."
 
 echo
 echo "Resolved binary and packages versions:"
@@ -31,25 +33,26 @@ echo "  - protoc-gen-grpc-gateway: ${GRPC_GATEWAY_BIN}"
 echo "  - swagger:                 ${SWAGGER_BIN}"
 echo "  - gogoproto-root:          ${GOGOPROTO_ROOT}"
 echo "  - grpc-gateway-root:       ${GRPC_GATEWAY_ROOT}"
+echo "  - raft-root:               ${RAFT_ROOT}"
 GOGOPROTO_PATH="${GOGOPROTO_ROOT}:${GOGOPROTO_ROOT}/protobuf"
 
 # directories containing protos to be built
-DIRS="./server/storage/wal/walpb ./api/etcdserverpb ./server/etcdserver/api/snap/snappb ./raft/raftpb ./api/mvccpb ./server/lease/leasepb ./api/authpb ./server/etcdserver/api/v3lock/v3lockpb ./server/etcdserver/api/v3election/v3electionpb ./api/membershippb ./tests/functional ./api/versionpb"
+DIRS="./server/storage/wal/walpb ./api/etcdserverpb ./server/etcdserver/api/snap/snappb ./api/mvccpb ./server/lease/leasepb ./api/authpb ./server/etcdserver/api/v3lock/v3lockpb ./server/etcdserver/api/v3election/v3electionpb ./api/membershippb ./api/versionpb"
 
 log_callout -e "\\nRunning gofast (gogo) proto generation..."
 
 for dir in ${DIRS}; do
   run pushd "${dir}"
-    run protoc --gofast_out=plugins=grpc:. -I=".:${GOGOPROTO_PATH}:${ETCD_ROOT_DIR}/..:${ETCD_ROOT_DIR}:${GRPC_GATEWAY_ROOT}/third_party/googleapis" \
+    run protoc --gofast_out=plugins=grpc:. -I=".:${GOGOPROTO_PATH}:${ETCD_ROOT_DIR}/..:${RAFT_ROOT}:${ETCD_ROOT_DIR}:${GRPC_GATEWAY_ROOT}/third_party/googleapis" \
       --plugin="${GOFAST_BIN}" ./**/*.proto
 
     run sed -i.bak -E 's|"etcd/api/|"go.etcd.io/etcd/api/v3/|g' ./**/*.pb.go
-    run sed -i.bak -E 's|"raft/raftpb"|"go.etcd.io/etcd/raft/v3/raftpb"|g' ./**/*.pb.go
+    run sed -i.bak -E 's|"raftpb"|"go.etcd.io/raft/v3/raftpb"|g' ./**/*.pb.go
     run sed -i.bak -E 's|"google/protobuf"|"github.com/gogo/protobuf/protoc-gen-gogo/descriptor"|g' ./**/*.pb.go
 
     rm -f ./**/*.bak
     run gofmt -s -w ./**/*.pb.go
-    run goimports -w ./**/*.pb.go
+    run_go_tool "golang.org/x/tools/cmd/goimports" -w ./**/*.pb.go
   run popd
 done
 
@@ -63,6 +66,7 @@ for pb in api/etcdserverpb/rpc server/etcdserver/api/v3lock/v3lockpb/v3lock serv
       -I"${GRPC_GATEWAY_ROOT}"/third_party/googleapis \
       -I"${GOGOPROTO_PATH}" \
       -I"${ETCD_ROOT_DIR}/.." \
+      -I"${RAFT_ROOT}" \
       --grpc-gateway_out=logtostderr=true,paths=source_relative:. \
       --swagger_out=logtostderr=true:./Documentation/dev-guide/apispec/swagger/. \
       --plugin="${SWAGGER_BIN}" --plugin="${GRPC_GATEWAY_BIN}" \
@@ -95,7 +99,7 @@ log_callout -e "\\nRunning swagger ..."
 run_go_tool github.com/hexfusion/schwag -input=Documentation/dev-guide/apispec/swagger/rpc.swagger.json
 
 
-if [ "$1" != "--skip-protodoc" ]; then
+if [ "${1:-}" != "--skip-protodoc" ]; then
   log_callout "protodoc is auto-generating grpc API reference documentation..."
 
   # API reference

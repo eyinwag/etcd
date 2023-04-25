@@ -25,9 +25,9 @@ import (
 
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	"go.etcd.io/etcd/pkg/v3/pbutil"
-	"go.etcd.io/etcd/raft/v3"
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	stats "go.etcd.io/etcd/server/v3/etcdserver/api/v2stats"
+	"go.etcd.io/raft/v3"
+	"go.etcd.io/raft/v3/raftpb"
 
 	"go.uber.org/zap"
 )
@@ -103,7 +103,7 @@ func (p *pipeline) handle() {
 			if err != nil {
 				p.status.deactivate(failureType{source: pipelineMsg, action: "write"}, err.Error())
 
-				if m.Type == raftpb.MsgApp && p.followerStats != nil {
+				if isMsgApp(m) && p.followerStats != nil {
 					p.followerStats.Fail()
 				}
 				p.raft.ReportUnreachable(m.To)
@@ -115,7 +115,7 @@ func (p *pipeline) handle() {
 			}
 
 			p.status.activate()
-			if m.Type == raftpb.MsgApp && p.followerStats != nil {
+			if isMsgApp(m) && p.followerStats != nil {
 				p.followerStats.Succ(end.Sub(start))
 			}
 			if isMsgSnap(m) {

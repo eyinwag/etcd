@@ -25,11 +25,7 @@ import (
 
 // TestStartEtcdWrongToken ensures that StartEtcd with wrong configs returns with error.
 func TestStartEtcdWrongToken(t *testing.T) {
-	tdir, err := os.MkdirTemp(t.TempDir(), "token-test")
-
-	if err != nil {
-		t.Fatal(err)
-	}
+	tdir := t.TempDir()
 
 	cfg := NewConfig()
 
@@ -37,8 +33,8 @@ func TestStartEtcdWrongToken(t *testing.T) {
 	urls := newEmbedURLs(2)
 	curls := []url.URL{urls[0]}
 	purls := []url.URL{urls[1]}
-	cfg.LCUrls, cfg.ACUrls = curls, curls
-	cfg.LPUrls, cfg.APUrls = purls, purls
+	cfg.ListenClientUrls, cfg.AdvertiseClientUrls = curls, curls
+	cfg.ListenPeerUrls, cfg.AdvertisePeerUrls = purls, purls
 	cfg.InitialCluster = ""
 	for i := range purls {
 		cfg.InitialCluster += ",default=" + purls[i].String()
@@ -47,7 +43,7 @@ func TestStartEtcdWrongToken(t *testing.T) {
 	cfg.Dir = tdir
 	cfg.AuthToken = "wrong-token"
 
-	if _, err = StartEtcd(cfg); err != auth.ErrInvalidAuthOpts {
+	if _, err := StartEtcd(cfg); err != auth.ErrInvalidAuthOpts {
 		t.Fatalf("expected %v, got %v", auth.ErrInvalidAuthOpts, err)
 	}
 }

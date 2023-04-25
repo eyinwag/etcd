@@ -15,9 +15,11 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ import (
 	"go.etcd.io/etcd/pkg/v3/expect"
 )
 
-func WaitReadyExpectProc(exproc *expect.ExpectProcess, readyStrs []string) error {
+func WaitReadyExpectProc(ctx context.Context, exproc *expect.ExpectProcess, readyStrs []string) error {
 	matchSet := func(l string) bool {
 		for _, s := range readyStrs {
 			if strings.Contains(l, s) {
@@ -35,7 +37,7 @@ func WaitReadyExpectProc(exproc *expect.ExpectProcess, readyStrs []string) error
 		}
 		return false
 	}
-	_, err := exproc.ExpectFunc(matchSet)
+	_, err := exproc.ExpectFunc(ctx, matchSet)
 	return err
 }
 
@@ -48,40 +50,58 @@ func SpawnWithExpectWithEnv(args []string, envVars map[string]string, expected s
 }
 
 func SpawnWithExpects(args []string, envVars map[string]string, xs ...string) error {
-	_, err := SpawnWithExpectLines(args, envVars, xs...)
+	return SpawnWithExpectsContext(context.TODO(), args, envVars, xs...)
+}
+
+func SpawnWithExpectsContext(ctx context.Context, args []string, envVars map[string]string, xs ...string) error {
+	_, err := SpawnWithExpectLines(ctx, args, envVars, xs...)
 	return err
 }
 
-func SpawnWithExpectLines(args []string, envVars map[string]string, xs ...string) ([]string, error) {
+func SpawnWithExpectLines(ctx context.Context, args []string, envVars map[string]string, xs ...string) ([]string, error) {
 	proc, err := SpawnCmd(args, envVars)
 	if err != nil {
 		return nil, err
 	}
+	defer proc.Close()
 	// process until either stdout or stderr contains
 	// the expected string
 	var (
-		lines    []string
-		lineFunc = func(txt string) bool { return true }
+		lines []string
 	)
 	for _, txt := range xs {
-		for {
-			l, lerr := proc.ExpectFunc(lineFunc)
-			if lerr != nil {
-				proc.Close()
-				return nil, fmt.Errorf("%v %v (expected %q, got %q). Try EXPECT_DEBUG=TRUE", args, lerr, txt, lines)
-			}
-			lines = append(lines, l)
-			if strings.Contains(l, txt) {
-				break
-			}
+		l, lerr := proc.ExpectWithContext(ctx, txt)
+		if lerr != nil {
+			proc.Close()
+			return nil, fmt.Errorf("%v %v (expected %q, got %q). Try EXPECT_DEBUG=TRUE", args, lerr, txt, lines)
 		}
+		lines = append(lines, l)
 	}
 	perr := proc.Close()
-	l := proc.LineCount()
-	if len(xs) == 0 && l != noOutputLineCount { // expect no output
-		return nil, fmt.Errorf("unexpected output from %v (got lines %q, line count %d) %v. Try EXPECT_DEBUG=TRUE", args, lines, l, l != noOutputLineCount)
+	if perr != nil {
+		return lines, fmt.Errorf("err: %w, with output lines %v", perr, proc.Lines())
 	}
-	return lines, perr
+
+	l := proc.LineCount()
+	if len(xs) == 0 && l != 0 { // expect no output
+		return nil, fmt.Errorf("unexpected output from %v (got lines %q, line count %d). Try EXPECT_DEBUG=TRUE", args, lines, l)
+	}
+	return lines, nil
+}
+
+func RunUtilCompletion(args []string, envVars map[string]string) ([]string, error) {
+	proc, err := SpawnCmd(args, envVars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to spawn command %v with error: %w", args, err)
+	}
+
+	proc.Wait()
+	err = proc.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to close command %v with error: %w", args, err)
+	}
+
+	return proc.Lines(), nil
 }
 
 func RandomLeaseID() int64 {
@@ -118,16 +138,26 @@ func SkipInShortMode(t testing.TB) {
 	testutil.SkipTestIfShortMode(t, "e2e tests are not running in --short mode")
 }
 
-func ExecuteWithTimeout(t *testing.T, timeout time.Duration, f func()) {
-	donec := make(chan struct{})
-	go func() {
-		defer close(donec)
-		f()
-	}()
-
-	select {
-	case <-time.After(timeout):
-		testutil.FatalStack(t, fmt.Sprintf("test timed out after %v", timeout))
-	case <-donec:
+func mergeEnvVariables(envVars map[string]string) []string {
+	var env []string
+	// Environment variables are passed as parameter have higher priority
+	// than os environment variables.
+	for k, v := range envVars {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
+
+	// Now, we can set os environment variables not passed as parameter.
+	currVars := os.Environ()
+	for _, v := range currVars {
+		p := strings.Split(v, "=")
+		// TODO: Remove PATH when we stop using system binaries (`awk`, `echo`)
+		if !strings.HasPrefix(p[0], "ETCD_") && !strings.HasPrefix(p[0], "ETCDCTL_") && !strings.HasPrefix(p[0], "EXPECT_") && p[0] != "PATH" {
+			continue
+		}
+		if _, ok := envVars[p[0]]; !ok {
+			env = append(env, fmt.Sprintf("%s=%s", p[0], p[1]))
+		}
+	}
+
+	return env
 }

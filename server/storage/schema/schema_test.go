@@ -20,19 +20,16 @@ import (
 
 	"github.com/coreos/go-semver/semver"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
+
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/membershippb"
-	"go.etcd.io/etcd/raft/v3/raftpb"
+	"go.etcd.io/etcd/api/v3/version"
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 	"go.etcd.io/etcd/server/v3/storage/wal"
 	waltesting "go.etcd.io/etcd/server/v3/storage/wal/testing"
-	"go.uber.org/zap"
-)
-
-var (
-	V3_4 = semver.Version{Major: 3, Minor: 4}
-	V3_7 = semver.Version{Major: 3, Minor: 7}
+	"go.etcd.io/raft/v3/raftpb"
 )
 
 func TestValidate(t *testing.T) {
@@ -48,35 +45,35 @@ func TestValidate(t *testing.T) {
 		// For storage to be considered v3.5 it have both confstate and term key set.
 		{
 			name:    `V3.4 schema is correct`,
-			version: V3_4,
+			version: version.V3_4,
 		},
 		{
 			name:         `V3.5 schema without confstate and term fields is correct`,
-			version:      V3_5,
+			version:      version.V3_5,
 			overrideKeys: func(tx backend.BatchTx) {},
 		},
 		{
 			name:    `V3.5 schema without term field is correct`,
-			version: V3_5,
+			version: version.V3_5,
 			overrideKeys: func(tx backend.BatchTx) {
 				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
 			},
 		},
 		{
 			name:    `V3.5 schema with all fields is correct`,
-			version: V3_5,
+			version: version.V3_5,
 			overrideKeys: func(tx backend.BatchTx) {
 				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
-				UnsafeUpdateConsistentIndex(tx, 1, 1, false)
+				UnsafeUpdateConsistentIndex(tx, 1, 1)
 			},
 		},
 		{
 			name:    `V3.6 schema is correct`,
-			version: V3_6,
+			version: version.V3_6,
 		},
 		{
 			name:           `V3.7 schema is unknown and should return error`,
-			version:        V3_7,
+			version:        version.V3_7,
 			expectError:    true,
 			expectErrorMsg: `version "3.7.0" is not supported`,
 		},
@@ -86,9 +83,9 @@ func TestValidate(t *testing.T) {
 			lg := zap.NewNop()
 			dataPath := setupBackendData(t, tc.version, tc.overrideKeys)
 
-			b := backend.NewDefaultBackend(dataPath)
+			b := backend.NewDefaultBackend(lg, dataPath)
 			defer b.Close()
-			err := Validate(lg, b.BatchTx())
+			err := Validate(lg, b.ReadTx())
 			if (err != nil) != tc.expectError {
 				t.Errorf("Validate(lg, tx) = %+v, expected error: %v", err, tc.expectError)
 			}
@@ -116,68 +113,68 @@ func TestMigrate(t *testing.T) {
 		// For storage to be considered v3.5 it have both confstate and term key set.
 		{
 			name:           `Upgrading v3.5 to v3.6 should be rejected if confstate is not set`,
-			version:        V3_5,
+			version:        version.V3_5,
 			overrideKeys:   func(tx backend.BatchTx) {},
-			targetVersion:  V3_6,
+			targetVersion:  version.V3_6,
 			expectVersion:  nil,
 			expectError:    true,
 			expectErrorMsg: `cannot detect storage schema version: missing confstate information`,
 		},
 		{
 			name:    `Upgrading v3.5 to v3.6 should be rejected if term is not set`,
-			version: V3_5,
+			version: version.V3_5,
 			overrideKeys: func(tx backend.BatchTx) {
 				MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
 			},
-			targetVersion:  V3_6,
+			targetVersion:  version.V3_6,
 			expectVersion:  nil,
 			expectError:    true,
 			expectErrorMsg: `cannot detect storage schema version: missing term information`,
 		},
 		{
 			name:          `Upgrading v3.5 to v3.6 should succeed; all required fields are set`,
-			version:       V3_5,
-			targetVersion: V3_6,
-			expectVersion: &V3_6,
+			version:       version.V3_5,
+			targetVersion: version.V3_6,
+			expectVersion: &version.V3_6,
 		},
 		{
 			name:          `Migrate on same v3.5 version passes and doesn't set storage version'`,
-			version:       V3_5,
-			targetVersion: V3_5,
+			version:       version.V3_5,
+			targetVersion: version.V3_5,
 			expectVersion: nil,
 		},
 		{
 			name:          `Migrate on same v3.6 version passes`,
-			version:       V3_6,
-			targetVersion: V3_6,
-			expectVersion: &V3_6,
+			version:       version.V3_6,
+			targetVersion: version.V3_6,
+			expectVersion: &version.V3_6,
 		},
 		{
 			name:          `Migrate on same v3.7 version passes`,
-			version:       V3_7,
-			targetVersion: V3_7,
-			expectVersion: &V3_7,
+			version:       version.V3_7,
+			targetVersion: version.V3_7,
+			expectVersion: &version.V3_7,
 		},
 		{
 			name:           "Upgrading 3.6 to v3.7 is not supported",
-			version:        V3_6,
-			targetVersion:  V3_7,
-			expectVersion:  &V3_6,
+			version:        version.V3_6,
+			targetVersion:  version.V3_7,
+			expectVersion:  &version.V3_6,
 			expectError:    true,
 			expectErrorMsg: `cannot create migration plan: version "3.7.0" is not supported`,
 		},
 		{
 			name:           "Downgrading v3.7 to v3.6 is not supported",
-			version:        V3_7,
-			targetVersion:  V3_6,
-			expectVersion:  &V3_7,
+			version:        version.V3_7,
+			targetVersion:  version.V3_6,
+			expectVersion:  &version.V3_7,
 			expectError:    true,
 			expectErrorMsg: `cannot create migration plan: version "3.7.0" is not supported`,
 		},
 		{
 			name:          "Downgrading v3.6 to v3.5 works as there are no v3.6 wal entries",
-			version:       V3_6,
-			targetVersion: V3_5,
+			version:       version.V3_6,
+			targetVersion: version.V3_5,
 			walEntries: []etcdserverpb.InternalRaftRequest{
 				{Range: &etcdserverpb.RangeRequest{Key: []byte("\x00"), RangeEnd: []byte("\xff")}},
 			},
@@ -185,19 +182,19 @@ func TestMigrate(t *testing.T) {
 		},
 		{
 			name:          "Downgrading v3.6 to v3.5 fails if there are newer WAL entries",
-			version:       V3_6,
-			targetVersion: V3_5,
+			version:       version.V3_6,
+			targetVersion: version.V3_5,
 			walEntries: []etcdserverpb.InternalRaftRequest{
 				{ClusterVersionSet: &membershippb.ClusterVersionSetRequest{Ver: "3.6.0"}},
 			},
-			expectVersion:  &V3_6,
+			expectVersion:  &version.V3_6,
 			expectError:    true,
 			expectErrorMsg: "cannot downgrade storage, WAL contains newer entries",
 		},
 		{
 			name:           "Downgrading v3.5 to v3.4 is not supported as schema was introduced in v3.6",
-			version:        V3_5,
-			targetVersion:  V3_4,
+			version:        version.V3_5,
+			targetVersion:  version.V3_4,
 			expectVersion:  nil,
 			expectError:    true,
 			expectErrorMsg: `cannot create migration plan: version "3.5.0" is not supported`,
@@ -214,7 +211,7 @@ func TestMigrate(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			b := backend.NewDefaultBackend(dataPath)
+			b := backend.NewDefaultBackend(lg, dataPath)
 			defer b.Close()
 
 			err = Migrate(lg, b.BatchTx(), walVersion, tc.targetVersion)
@@ -236,7 +233,7 @@ func TestMigrateIsReversible(t *testing.T) {
 		state          map[string]string
 	}{
 		{
-			initialVersion: V3_5,
+			initialVersion: version.V3_5,
 			state: map[string]string{
 				"confState":        `{"auto_leave":false}`,
 				"consistent_index": "\x00\x00\x00\x00\x00\x00\x00\x01",
@@ -244,7 +241,7 @@ func TestMigrateIsReversible(t *testing.T) {
 			},
 		},
 		{
-			initialVersion: V3_6,
+			initialVersion: version.V3_6,
 			state: map[string]string{
 				"confState":        `{"auto_leave":false}`,
 				"consistent_index": "\x00\x00\x00\x00\x00\x00\x00\x01",
@@ -258,7 +255,7 @@ func TestMigrateIsReversible(t *testing.T) {
 			lg := zap.NewNop()
 			dataPath := setupBackendData(t, tc.initialVersion, nil)
 
-			be := backend.NewDefaultBackend(dataPath)
+			be := backend.NewDefaultBackend(lg, dataPath)
 			defer be.Close()
 			tx := be.BatchTx()
 			tx.Lock()
@@ -297,7 +294,7 @@ func TestMigrateIsReversible(t *testing.T) {
 	}
 }
 
-func setupBackendData(t *testing.T, version semver.Version, overrideKeys func(tx backend.BatchTx)) string {
+func setupBackendData(t *testing.T, ver semver.Version, overrideKeys func(tx backend.BatchTx)) string {
 	t.Helper()
 	be, tmpPath := betesting.NewTmpBackend(t, time.Microsecond, 10)
 	tx := be.BatchTx()
@@ -309,19 +306,19 @@ func setupBackendData(t *testing.T, version semver.Version, overrideKeys func(tx
 	if overrideKeys != nil {
 		overrideKeys(tx)
 	} else {
-		switch version {
-		case V3_4:
-		case V3_5:
+		switch ver {
+		case version.V3_4:
+		case version.V3_5:
 			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
-			UnsafeUpdateConsistentIndex(tx, 1, 1, false)
-		case V3_6:
+			UnsafeUpdateConsistentIndex(tx, 1, 1)
+		case version.V3_6:
 			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
-			UnsafeUpdateConsistentIndex(tx, 1, 1, false)
-			UnsafeSetStorageVersion(tx, &V3_6)
-		case V3_7:
+			UnsafeUpdateConsistentIndex(tx, 1, 1)
+			UnsafeSetStorageVersion(tx, &version.V3_6)
+		case version.V3_7:
 			MustUnsafeSaveConfStateToBackend(zap.NewNop(), tx, &raftpb.ConfState{})
-			UnsafeUpdateConsistentIndex(tx, 1, 1, false)
-			UnsafeSetStorageVersion(tx, &V3_7)
+			UnsafeUpdateConsistentIndex(tx, 1, 1)
+			UnsafeSetStorageVersion(tx, &version.V3_7)
 			tx.UnsafePut(Meta, []byte("future-key"), []byte(""))
 		default:
 			t.Fatalf("Unsupported storage version")

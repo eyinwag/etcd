@@ -17,9 +17,9 @@ package etcdserver
 import (
 	"io"
 
-	"go.etcd.io/etcd/raft/v3/raftpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/storage/backend"
+	"go.etcd.io/raft/v3/raftpb"
 
 	humanize "github.com/dustin/go-humanize"
 	"go.uber.org/zap"
@@ -53,7 +53,9 @@ func (s *EtcdServer) createMergedSnapshotMessage(m raftpb.Message, snapt, snapi 
 		},
 		Data: d,
 	}
-	m.Snapshot = snapshot
+	m.Snapshot = &snapshot
+
+	verifySnapshotIndex(snapshot, s.consistIndex.ConsistentIndex())
 
 	return *snap.NewMessage(m, rc, dbsnap.Size())
 }

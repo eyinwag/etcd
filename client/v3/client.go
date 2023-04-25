@@ -23,16 +23,19 @@ import (
 	"sync"
 	"time"
 
-	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/v3/credentials"
-	"go.etcd.io/etcd/client/v3/internal/endpoint"
-	"go.etcd.io/etcd/client/v3/internal/resolver"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpccredentials "google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
+
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
+	"go.etcd.io/etcd/client/v3/credentials"
+	"go.etcd.io/etcd/client/v3/internal/endpoint"
+	"go.etcd.io/etcd/client/v3/internal/resolver"
 )
 
 var (
@@ -186,9 +189,12 @@ func (c *Client) Sync(ctx context.Context) error {
 	}
 	var eps []string
 	for _, m := range mresp.Members {
-		eps = append(eps, m.ClientURLs...)
+		if len(m.Name) != 0 && !m.IsLearner {
+			eps = append(eps, m.ClientURLs...)
+		}
 	}
 	c.SetEndpoints(eps...)
+	c.lg.Debug("set etcd endpoints by autoSync", zap.Strings("endpoints", eps))
 	return nil
 }
 
@@ -227,7 +233,7 @@ func (c *Client) dialSetupOpts(creds grpccredentials.TransportCredentials, dopts
 	if creds != nil {
 		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
-		opts = append(opts, grpc.WithInsecure())
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
 	// Interceptor retry and backoff.
@@ -263,6 +269,7 @@ func (c *Client) getToken(ctx context.Context) error {
 	resp, err := c.Auth.Authenticate(ctx, c.Username, c.Password)
 	if err != nil {
 		if err == rpctypes.ErrAuthNotEnabled {
+			c.authTokenBundle.UpdateAuthToken("")
 			return nil
 		}
 		return err
@@ -369,7 +376,10 @@ func newClient(cfg *Config) (*Client, error) {
 	} else if cfg.LogConfig != nil {
 		client.lg, err = cfg.LogConfig.Build()
 	} else {
-		client.lg, err = CreateDefaultZapLogger()
+		client.lg, err = logutil.CreateDefaultZapLogger(etcdClientDebugLevel())
+		if client.lg != nil {
+			client.lg = client.lg.Named("etcd-client")
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -402,7 +412,7 @@ func newClient(cfg *Config) (*Client, error) {
 
 	if len(cfg.Endpoints) < 1 {
 		client.cancel()
-		return nil, fmt.Errorf("at least one Endpoint is required in client config")
+		return nil, errors.New("at least one Endpoint is required in client config")
 	}
 	client.SetEndpoints(cfg.Endpoints...)
 
@@ -499,7 +509,7 @@ func (c *Client) checkVersion() (err error) {
 					return
 				}
 			}
-			if maj < 3 || (maj == 3 && min < 2) {
+			if maj < 3 || (maj == 3 && min < 4) {
 				rerr = ErrOldCluster
 			}
 			errc <- rerr
@@ -507,7 +517,7 @@ func (c *Client) checkVersion() (err error) {
 	}
 	// wait for success
 	for range eps {
-		if err = <-errc; err == nil {
+		if err = <-errc; err != nil {
 			break
 		}
 	}

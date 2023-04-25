@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
 )
@@ -32,7 +32,7 @@ import (
 func TestLeaseNotFoundError(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	kv := clus.RandClient()
@@ -46,7 +46,7 @@ func TestLeaseNotFoundError(t *testing.T) {
 func TestLeaseGrant(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	lapi := clus.RandClient()
@@ -72,7 +72,7 @@ func TestLeaseGrant(t *testing.T) {
 func TestLeaseRevoke(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	lapi := clus.RandClient()
@@ -98,7 +98,7 @@ func TestLeaseRevoke(t *testing.T) {
 func TestLeaseKeepAliveOnce(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	lapi := clus.RandClient()
@@ -122,7 +122,7 @@ func TestLeaseKeepAliveOnce(t *testing.T) {
 func TestLeaseKeepAlive(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	lapi := clus.Client(0)
@@ -162,7 +162,7 @@ func TestLeaseKeepAlive(t *testing.T) {
 func TestLeaseKeepAliveOneSecond(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -183,6 +183,7 @@ func TestLeaseKeepAliveOneSecond(t *testing.T) {
 	}
 }
 
+// TestLeaseKeepAliveHandleFailure tests lease keep alive handling faillure
 // TODO: add a client that can connect to all the members of cluster via unix sock.
 // TODO: test handle more complicated failures.
 func TestLeaseKeepAliveHandleFailure(t *testing.T) {
@@ -190,7 +191,7 @@ func TestLeaseKeepAliveHandleFailure(t *testing.T) {
 
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
 	defer clus.Terminate(t)
 
 	// TODO: change this line to get a cluster client
@@ -245,11 +246,11 @@ type leaseCh struct {
 func TestLeaseKeepAliveNotFound(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.RandClient()
-	lchs := []leaseCh{}
+	var lchs []leaseCh
 	for i := 0; i < 3; i++ {
 		resp, rerr := cli.Grant(context.TODO(), 5)
 		if rerr != nil {
@@ -278,7 +279,7 @@ func TestLeaseKeepAliveNotFound(t *testing.T) {
 func TestLeaseGrantErrConnClosed(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -310,7 +311,7 @@ func TestLeaseGrantErrConnClosed(t *testing.T) {
 func TestLeaseKeepAliveFullResponseQueue(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	lapi := clus.Client(0)
@@ -350,7 +351,7 @@ func TestLeaseKeepAliveFullResponseQueue(t *testing.T) {
 func TestLeaseGrantNewAfterClose(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -377,7 +378,7 @@ func TestLeaseGrantNewAfterClose(t *testing.T) {
 func TestLeaseRevokeNewAfterClose(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -416,7 +417,7 @@ func TestLeaseRevokeNewAfterClose(t *testing.T) {
 func TestLeaseKeepAliveCloseAfterDisconnectRevoke(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -462,7 +463,7 @@ func TestLeaseKeepAliveCloseAfterDisconnectRevoke(t *testing.T) {
 func TestLeaseKeepAliveInitTimeout(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -490,12 +491,12 @@ func TestLeaseKeepAliveInitTimeout(t *testing.T) {
 	clus.Members[0].Restart(t)
 }
 
-// TestLeaseKeepAliveInitTimeout ensures the keep alive channel closes if
+// TestLeaseKeepAliveTTLTimeout ensures the keep alive channel closes if
 // a keep alive request after the first never gets a response.
 func TestLeaseKeepAliveTTLTimeout(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, UseBridge: true})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -530,7 +531,7 @@ func TestLeaseKeepAliveTTLTimeout(t *testing.T) {
 func TestLeaseTimeToLive(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
 	defer clus.Terminate(t)
 
 	c := clus.RandClient()
@@ -588,7 +589,7 @@ func TestLeaseTimeToLive(t *testing.T) {
 func TestLeaseTimeToLiveLeaseNotFound(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.RandClient()
@@ -623,12 +624,12 @@ func TestLeaseTimeToLiveLeaseNotFound(t *testing.T) {
 func TestLeaseLeases(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	cli := clus.RandClient()
 
-	ids := []clientv3.LeaseID{}
+	var ids []clientv3.LeaseID
 	for i := 0; i < 5; i++ {
 		resp, err := cli.Grant(context.Background(), 10)
 		if err != nil {
@@ -656,7 +657,7 @@ func TestLeaseLeases(t *testing.T) {
 func TestLeaseRenewLostQuorum(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3, UseBridge: true})
 	defer clus.Terminate(t)
 
 	cli := clus.Client(0)
@@ -704,7 +705,7 @@ func TestLeaseRenewLostQuorum(t *testing.T) {
 func TestLeaseKeepAliveLoopExit(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	ctx := context.Background()
@@ -728,7 +729,7 @@ func TestLeaseKeepAliveLoopExit(t *testing.T) {
 // transient cluster failure.
 func TestV3LeaseFailureOverlap(t *testing.T) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 2, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2, UseBridge: true})
 	defer clus.Terminate(t)
 
 	numReqs := 5
@@ -782,7 +783,7 @@ func TestV3LeaseFailureOverlap(t *testing.T) {
 func TestLeaseWithRequireLeader(t *testing.T) {
 	integration2.BeforeTest(t)
 
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 2, UseBridge: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2, UseBridge: true})
 	defer clus.Terminate(t)
 
 	c := clus.Client(0)

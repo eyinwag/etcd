@@ -16,14 +16,20 @@ package mvcc
 
 import (
 	"encoding/binary"
+	"fmt"
 	"time"
 
-	"go.etcd.io/etcd/server/v3/storage/schema"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/server/v3/storage/schema"
 )
 
-func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struct{}) bool {
+func (s *store) scheduleCompaction(compactMainRev, prevCompactRev int64) (KeyValueHash, error) {
 	totalStart := time.Now()
+	keep := s.kvindex.Compact(compactMainRev)
+	indexCompactionPauseMs.Observe(float64(time.Since(totalStart) / time.Millisecond))
+
+	totalStart = time.Now()
 	defer func() { dbCompactionTotalMs.Observe(float64(time.Since(totalStart) / time.Millisecond)) }()
 	keyCompactions := 0
 	defer func() { dbCompactionKeysCounter.Add(float64(keyCompactions)) }()
@@ -33,8 +39,9 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 	binary.BigEndian.PutUint64(end, uint64(compactMainRev+1))
 
 	batchNum := s.cfg.CompactionBatchLimit
-	batchInterval := s.cfg.CompactionSleepInterval
-
+	batchTicker := time.NewTicker(s.cfg.CompactionSleepInterval)
+	defer batchTicker.Stop()
+	h := newKVHasher(prevCompactRev, compactMainRev, keep)
 	last := make([]byte, 8+1+8)
 	for {
 		var rev revision
@@ -42,38 +49,45 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 		start := time.Now()
 
 		tx := s.b.BatchTx()
-		tx.Lock()
-		keys, _ := tx.UnsafeRange(schema.Key, last, end, int64(batchNum))
-		for _, key := range keys {
-			rev = bytesToRev(key)
+		tx.LockOutsideApply()
+		keys, values := tx.UnsafeRange(schema.Key, last, end, int64(batchNum))
+		for i := range keys {
+			rev = bytesToRev(keys[i])
 			if _, ok := keep[rev]; !ok {
-				tx.UnsafeDelete(schema.Key, key)
+				tx.UnsafeDelete(schema.Key, keys[i])
 				keyCompactions++
 			}
+			h.WriteKeyValue(keys[i], values[i])
 		}
 
 		if len(keys) < batchNum {
+			// gofail: var compactBeforeSetFinishedCompact struct{}
 			UnsafeSetFinishedCompact(tx, compactMainRev)
 			tx.Unlock()
+			// gofail: var compactAfterSetFinishedCompact struct{}
+			hash := h.Hash()
 			s.lg.Info(
 				"finished scheduled compaction",
 				zap.Int64("compact-revision", compactMainRev),
 				zap.Duration("took", time.Since(totalStart)),
+				zap.Uint32("hash", hash.Hash),
 			)
-			return true
+			return hash, nil
 		}
 
 		tx.Unlock()
 		// update last
 		revToBytes(revision{main: rev.main, sub: rev.sub + 1}, last)
 		// Immediately commit the compaction deletes instead of letting them accumulate in the write buffer
+		// gofail: var compactBeforeCommitBatch struct{}
 		s.b.ForceCommit()
+		// gofail: var compactAfterCommitBatch struct{}
 		dbCompactionPauseMs.Observe(float64(time.Since(start) / time.Millisecond))
 
 		select {
-		case <-time.After(batchInterval):
+		case <-batchTicker.C:
 		case <-s.stopc:
-			return false
+			return KeyValueHash{}, fmt.Errorf("interrupted due to stop signal")
 		}
 	}
 }

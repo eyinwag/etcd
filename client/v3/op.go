@@ -389,12 +389,12 @@ func getPrefix(key []byte) []byte {
 // can return 'foo1', 'foo2', and so on.
 func WithPrefix() OpOption {
 	return func(op *Op) {
+		op.isOptsWithPrefix = true
 		if len(op.key) == 0 {
 			op.key, op.end = []byte{0}, []byte{0}
 			return
 		}
 		op.end = getPrefix(op.key)
-		op.isOptsWithPrefix = true
 	}
 }
 
@@ -418,9 +418,15 @@ func WithFromKey() OpOption {
 	}
 }
 
-// WithSerializable makes 'Get' request serializable. By default,
-// it's linearizable. Serializable requests are better for lower latency
-// requirement.
+// WithSerializable makes `Get` and `MemberList` requests serializable.
+// By default, they are linearizable. Serializable requests are better
+// for lower latency requirement, but users should be aware that they
+// could get stale data with serializable requests.
+//
+// In some situations users may want to use serializable requests. For
+// example, when adding a new member to a one-node cluster, it's reasonable
+// and safe to use serializable request before the new added member gets
+// started.
 func WithSerializable() OpOption {
 	return func(op *Op) { op.serializable = true }
 }
@@ -580,4 +586,20 @@ func IsOptsWithFromKey(opts []OpOption) bool {
 	}
 
 	return ret.isOptsWithFromKey
+}
+
+func (op Op) IsSortOptionValid() bool {
+	if op.sort != nil {
+		sortOrder := int32(op.sort.Order)
+		sortTarget := int32(op.sort.Target)
+
+		if _, ok := pb.RangeRequest_SortOrder_name[sortOrder]; !ok {
+			return false
+		}
+
+		if _, ok := pb.RangeRequest_SortTarget_name[sortTarget]; !ok {
+			return false
+		}
+	}
+	return true
 }

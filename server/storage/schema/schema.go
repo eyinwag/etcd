@@ -18,25 +18,21 @@ import (
 	"fmt"
 
 	"github.com/coreos/go-semver/semver"
-	"go.etcd.io/etcd/api/v3/version"
 	"go.uber.org/zap"
+
+	"go.etcd.io/etcd/api/v3/version"
 
 	"go.etcd.io/etcd/server/v3/storage/backend"
 )
 
-var (
-	V3_5 = semver.Version{Major: 3, Minor: 5}
-	V3_6 = semver.Version{Major: 3, Minor: 6}
-)
-
 // Validate checks provided backend to confirm that schema used is supported.
-func Validate(lg *zap.Logger, tx backend.BatchTx) error {
+func Validate(lg *zap.Logger, tx backend.ReadTx) error {
 	tx.Lock()
 	defer tx.Unlock()
 	return unsafeValidate(lg, tx)
 }
 
-func unsafeValidate(lg *zap.Logger, tx backend.BatchTx) error {
+func unsafeValidate(lg *zap.Logger, tx backend.ReadTx) error {
 	current, err := UnsafeDetectSchemaVersion(lg, tx)
 	if err != nil {
 		// v3.5 requires a wal snapshot to persist its fields, so we can assign it a schema version.
@@ -60,7 +56,7 @@ type WALVersion interface {
 // Migrate updates storage schema to provided target version.
 // Downgrading requires that provided WAL doesn't contain unsupported entries.
 func Migrate(lg *zap.Logger, tx backend.BatchTx, w WALVersion, target semver.Version) error {
-	tx.Lock()
+	tx.LockOutsideApply()
 	defer tx.Unlock()
 	return UnsafeMigrate(lg, tx, w, target)
 }
@@ -69,11 +65,11 @@ func Migrate(lg *zap.Logger, tx backend.BatchTx, w WALVersion, target semver.Ver
 func UnsafeMigrate(lg *zap.Logger, tx backend.BatchTx, w WALVersion, target semver.Version) error {
 	current, err := UnsafeDetectSchemaVersion(lg, tx)
 	if err != nil {
-		return fmt.Errorf("cannot detect storage schema version: %w", err)
+		return fmt.Errorf("cannot detect storage schema version: %v", err)
 	}
 	plan, err := newPlan(lg, current, target)
 	if err != nil {
-		return fmt.Errorf("cannot create migration plan: %w", err)
+		return fmt.Errorf("cannot create migration plan: %v", err)
 	}
 	if target.LessThan(current) {
 		minVersion := w.MinimalEtcdVersion()
@@ -89,8 +85,8 @@ func UnsafeMigrate(lg *zap.Logger, tx backend.BatchTx, w WALVersion, target semv
 // * v3.5 will return it's version if it includes all storage fields added in v3.5 (might require a snapshot).
 // * v3.4 and older is not supported and will return error.
 func DetectSchemaVersion(lg *zap.Logger, tx backend.ReadTx) (v semver.Version, err error) {
-	tx.Lock()
-	defer tx.Unlock()
+	tx.RLock()
+	defer tx.RUnlock()
 	return UnsafeDetectSchemaVersion(lg, tx)
 }
 
@@ -108,7 +104,7 @@ func UnsafeDetectSchemaVersion(lg *zap.Logger, tx backend.ReadTx) (v semver.Vers
 	if term == 0 {
 		return v, fmt.Errorf("missing term information")
 	}
-	return V3_5, nil
+	return version.V3_5, nil
 }
 
 func schemaChangesForVersion(v semver.Version, isUpgrade bool) ([]schemaChange, error) {
@@ -132,7 +128,7 @@ var (
 	// schemaChanges list changes that were introduced in a particular version.
 	// schema was introduced in v3.6 as so its changes were not tracked before.
 	schemaChanges = map[semver.Version][]schemaChange{
-		V3_6: {
+		version.V3_6: {
 			addNewField(Meta, MetaStorageVersionName, emptyStorageVersion),
 		},
 	}

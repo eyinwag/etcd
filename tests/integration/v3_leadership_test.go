@@ -21,10 +21,11 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/tests/v3/framework/integration"
-	"golang.org/x/sync/errgroup"
 )
 
 func TestMoveLeader(t *testing.T)        { testMoveLeader(t, true) }
@@ -33,11 +34,11 @@ func TestMoveLeaderService(t *testing.T) { testMoveLeader(t, false) }
 func testMoveLeader(t *testing.T, auto bool) {
 	integration.BeforeTest(t)
 
-	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	oldLeadIdx := clus.WaitLeader(t)
-	oldLeadID := uint64(clus.Members[oldLeadIdx].Server.ID())
+	oldLeadID := uint64(clus.Members[oldLeadIdx].Server.MemberId())
 
 	// ensure followers go through leader transition while leadership transfer
 	idc := make(chan uint64)
@@ -55,7 +56,7 @@ func testMoveLeader(t *testing.T, auto bool) {
 		}
 	}
 
-	target := uint64(clus.Members[(oldLeadIdx+1)%3].Server.ID())
+	target := uint64(clus.Members[(oldLeadIdx+1)%3].Server.MemberId())
 	if auto {
 		err := clus.Members[oldLeadIdx].Server.TransferLeadership()
 		if err != nil {
@@ -101,13 +102,13 @@ func testMoveLeader(t *testing.T, auto bool) {
 func TestMoveLeaderError(t *testing.T) {
 	integration.BeforeTest(t)
 
-	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	oldLeadIdx := clus.WaitLeader(t)
 	followerIdx := (oldLeadIdx + 1) % 3
 
-	target := uint64(clus.Members[(oldLeadIdx+2)%3].Server.ID())
+	target := uint64(clus.Members[(oldLeadIdx+2)%3].Server.MemberId())
 
 	mvc := integration.ToGRPC(clus.Client(followerIdx)).Maintenance
 	_, err := mvc.MoveLeader(context.TODO(), &pb.MoveLeaderRequest{TargetID: target})
@@ -120,7 +121,7 @@ func TestMoveLeaderError(t *testing.T) {
 func TestMoveLeaderToLearnerError(t *testing.T) {
 	integration.BeforeTest(t)
 
-	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 3})
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 3, DisableStrictReconfigCheck: true})
 	defer clus.Terminate(t)
 
 	// we have to add and launch learner member after initial cluster was created, because
@@ -153,7 +154,7 @@ func TestMoveLeaderToLearnerError(t *testing.T) {
 func TestTransferLeadershipWithLearner(t *testing.T) {
 	integration.BeforeTest(t)
 
-	clus := integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
+	clus := integration.NewCluster(t, &integration.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
 	clus.AddAndLaunchLearnerMember(t)
@@ -187,7 +188,7 @@ func TestFirstCommitNotification(t *testing.T) {
 	integration.BeforeTest(t)
 	ctx := context.Background()
 	clusterSize := 3
-	cluster := integration.NewClusterV3(t, &integration.ClusterConfig{Size: clusterSize})
+	cluster := integration.NewCluster(t, &integration.ClusterConfig{Size: clusterSize})
 	defer cluster.Terminate(t)
 
 	oldLeaderIdx := cluster.WaitLeader(t)

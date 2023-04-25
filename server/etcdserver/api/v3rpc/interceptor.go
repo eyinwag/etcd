@@ -18,18 +18,20 @@ import (
 	"context"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/types"
-	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver"
 	"go.etcd.io/etcd/server/v3/etcdserver/api"
+	"go.etcd.io/raft/v3"
 
-	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 )
 
 const (
@@ -48,8 +50,8 @@ func newUnaryInterceptor(s *etcdserver.EtcdServer) grpc.UnaryServerInterceptor {
 			return nil, rpctypes.ErrGRPCNotCapable
 		}
 
-		if s.IsMemberExist(s.ID()) && s.IsLearner() && !isRPCSupportedForLearner(req) {
-			return nil, rpctypes.ErrGPRCNotSupportedForLearner
+		if s.IsMemberExist(s.MemberId()) && s.IsLearner() && !isRPCSupportedForLearner(req) {
+			return nil, rpctypes.ErrGRPCNotSupportedForLearner
 		}
 
 		md, ok := metadata.FromIncomingContext(ctx)
@@ -57,6 +59,9 @@ func newUnaryInterceptor(s *etcdserver.EtcdServer) grpc.UnaryServerInterceptor {
 			ver, vs := "unknown", md.Get(rpctypes.MetadataClientAPIVersionKey)
 			if len(vs) > 0 {
 				ver = vs[0]
+			}
+			if !utf8.ValidString(ver) {
+				return nil, rpctypes.ErrGRPCInvalidClientAPIVersion
 			}
 			clientRequests.WithLabelValues("unary", ver).Inc()
 
@@ -214,8 +219,8 @@ func newStreamInterceptor(s *etcdserver.EtcdServer) grpc.StreamServerInterceptor
 			return rpctypes.ErrGRPCNotCapable
 		}
 
-		if s.IsMemberExist(s.ID()) && s.IsLearner() && info.FullMethod != snapshotMethod { // learner does not support stream RPC except Snapshot
-			return rpctypes.ErrGPRCNotSupportedForLearner
+		if s.IsMemberExist(s.MemberId()) && s.IsLearner() && info.FullMethod != snapshotMethod { // learner does not support stream RPC except Snapshot
+			return rpctypes.ErrGRPCNotSupportedForLearner
 		}
 
 		md, ok := metadata.FromIncomingContext(ss.Context())
@@ -223,6 +228,9 @@ func newStreamInterceptor(s *etcdserver.EtcdServer) grpc.StreamServerInterceptor
 			ver, vs := "unknown", md.Get(rpctypes.MetadataClientAPIVersionKey)
 			if len(vs) > 0 {
 				ver = vs[0]
+			}
+			if !utf8.ValidString(ver) {
+				return rpctypes.ErrGRPCInvalidClientAPIVersion
 			}
 			clientRequests.WithLabelValues("stream", ver).Inc()
 

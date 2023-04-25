@@ -23,24 +23,25 @@ import (
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
-	"go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
+	"go.etcd.io/etcd/tests/v3/framework/testutils"
 	clientv3test "go.etcd.io/etcd/tests/v3/integration/clientv3"
 	"google.golang.org/grpc"
 )
 
 var (
 	testTLSInfo = transport.TLSInfo{
-		KeyFile:        integration2.MustAbsPath("../../../fixtures/server.key.insecure"),
-		CertFile:       integration2.MustAbsPath("../../../fixtures/server.crt"),
-		TrustedCAFile:  integration2.MustAbsPath("../../../fixtures/ca.crt"),
+		KeyFile:        testutils.MustAbsPath("../../../fixtures/server.key.insecure"),
+		CertFile:       testutils.MustAbsPath("../../../fixtures/server.crt"),
+		TrustedCAFile:  testutils.MustAbsPath("../../../fixtures/ca.crt"),
 		ClientCertAuth: true,
 	}
 
 	testTLSInfoExpired = transport.TLSInfo{
-		KeyFile:        integration2.MustAbsPath("../../fixtures-expired/server.key.insecure"),
-		CertFile:       integration2.MustAbsPath("../../fixtures-expired/server.crt"),
-		TrustedCAFile:  integration2.MustAbsPath("../../fixtures-expired/ca.crt"),
+		KeyFile:        testutils.MustAbsPath("../../fixtures-expired/server.key.insecure"),
+		CertFile:       testutils.MustAbsPath("../../fixtures-expired/server.crt"),
+		TrustedCAFile:  testutils.MustAbsPath("../../fixtures-expired/ca.crt"),
 		ClientCertAuth: true,
 	}
 )
@@ -48,7 +49,7 @@ var (
 // TestDialTLSExpired tests client with expired certs fails to dial.
 func TestDialTLSExpired(t *testing.T) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1, PeerTLS: &testTLSInfo, ClientTLS: &testTLSInfo, SkipCreatingClient: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, PeerTLS: &testTLSInfo, ClientTLS: &testTLSInfo})
 	defer clus.Terminate(t)
 
 	tls, err := testTLSInfoExpired.ClientConfig()
@@ -71,7 +72,7 @@ func TestDialTLSExpired(t *testing.T) {
 // when TLS endpoints (https, unixs) are given but no tls config.
 func TestDialTLSNoConfig(t *testing.T) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 1, ClientTLS: &testTLSInfo, SkipCreatingClient: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1, ClientTLS: &testTLSInfo})
 	defer clus.Terminate(t)
 	// expect "signed by unknown authority"
 	c, err := integration2.NewClient(t, clientv3.Config{
@@ -102,7 +103,7 @@ func TestDialSetEndpointsAfterFail(t *testing.T) {
 // testDialSetEndpoints ensures SetEndpoints can replace unavailable endpoints with available ones.
 func testDialSetEndpoints(t *testing.T, setBefore bool) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3, SkipCreatingClient: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	// get endpoint list
@@ -145,7 +146,7 @@ func testDialSetEndpoints(t *testing.T, setBefore bool) {
 // with a new one that doesn't include original endpoint.
 func TestSwitchSetEndpoints(t *testing.T) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 3})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
 
 	// get non partitioned members endpoints
@@ -166,7 +167,7 @@ func TestSwitchSetEndpoints(t *testing.T) {
 func TestRejectOldCluster(t *testing.T) {
 	integration2.BeforeTest(t)
 	// 2 endpoints to test multi-endpoint Status
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 2, SkipCreatingClient: true})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
 	cfg := clientv3.Config{
@@ -186,7 +187,7 @@ func TestRejectOldCluster(t *testing.T) {
 // with the balancer can be dialed.
 func TestDialForeignEndpoint(t *testing.T) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 2})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
 	conn, err := clus.Client(0).Dial(clus.Client(1).Endpoints()[0])
@@ -209,7 +210,7 @@ func TestDialForeignEndpoint(t *testing.T) {
 // to a working endpoint will always succeed.
 func TestSetEndpointAndPut(t *testing.T) {
 	integration2.BeforeTest(t)
-	clus := integration2.NewClusterV3(t, &integration2.ClusterConfig{Size: 2})
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 2})
 	defer clus.Terminate(t)
 
 	clus.Client(1).SetEndpoints(clus.Members[0].GRPCURL())

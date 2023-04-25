@@ -15,12 +15,16 @@
 package e2e
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"path"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -110,7 +114,7 @@ func testV3CurlPutGet(cx ctlCtx) {
 	if err := e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/kv/range"), Value: string(rangeData), Expected: expectGet}); err != nil {
 		cx.t.Fatalf("failed testV3CurlPutGet get with curl using prefix (%s) (%v)", p, err)
 	}
-	if cx.cfg.ClientTLS == e2e.ClientTLSAndNonTLS {
+	if cx.cfg.Client.ConnectionType == e2e.ClientTLSAndNonTLS {
 		if err := e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/kv/range"), Value: string(rangeData), Expected: expectGet, IsTLS: true}); err != nil {
 			cx.t.Fatalf("failed testV3CurlPutGet get with curl using prefix (%s) (%v)", p, err)
 		}
@@ -139,9 +143,8 @@ func testV3CurlWatch(cx ctlCtx) {
 		cx.t.Fatalf("failed testV3CurlWatch put with curl using prefix (%s) (%v)", p, err)
 	}
 	// expects "bar", timeout after 2 seconds since stream waits forever
-	if err = e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/watch"), Value: wstr, Expected: `"YmFy"`, Timeout: 2}); err != nil {
-		cx.t.Fatalf("failed testV3CurlWatch watch with curl using prefix (%s) (%v)", p, err)
-	}
+	err = e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/watch"), Value: wstr, Expected: `"YmFy"`, Timeout: 2})
+	require.ErrorContains(cx.t, err, "unexpected exit code")
 }
 
 func testV3CurlTxn(cx ctlCtx) {
@@ -201,7 +204,7 @@ func testV3CurlAuth(cx ctlCtx) {
 	}
 
 	// create root role
-	rolereq, err := json.Marshal(&pb.AuthRoleAddRequest{Name: string("root")})
+	rolereq, err := json.Marshal(&pb.AuthRoleAddRequest{Name: "root"})
 	testutil.AssertNil(cx.t, err)
 
 	if err = e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/auth/role/add"), Value: string(rolereq), Expected: "revision"}); err != nil {
@@ -219,7 +222,7 @@ func testV3CurlAuth(cx ctlCtx) {
 	}
 
 	// enable auth
-	if err = e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/auth/enable"), Value: string("{}"), Expected: "revision"}); err != nil {
+	if err = e2e.CURLPost(cx.epc, e2e.CURLReq{Endpoint: path.Join(p, "/auth/enable"), Value: "{}", Expected: "revision"}); err != nil {
 		cx.t.Fatalf("failed testV3CurlAuth enable auth with curl using prefix (%s) (%v)", p, err)
 	}
 
@@ -243,12 +246,12 @@ func testV3CurlAuth(cx ctlCtx) {
 			lineFunc   = func(txt string) bool { return true }
 		)
 
-		cmdArgs = e2e.CURLPrefixArgs(cx.epc, "POST", e2e.CURLReq{Endpoint: path.Join(p, "/auth/authenticate"), Value: string(authreq)})
+		cmdArgs = e2e.CURLPrefixArgsCluster(cx.epc.Cfg, cx.epc.Procs[rand.Intn(cx.epc.Cfg.ClusterSize)], "POST", e2e.CURLReq{Endpoint: path.Join(p, "/auth/authenticate"), Value: string(authreq)})
 		proc, err := e2e.SpawnCmd(cmdArgs, cx.envMap)
 		testutil.AssertNil(cx.t, err)
 		defer proc.Close()
 
-		cURLRes, err := proc.ExpectFunc(lineFunc)
+		cURLRes, err := proc.ExpectFunc(context.Background(), lineFunc)
 		testutil.AssertNil(cx.t, err)
 
 		authRes := make(map[string]interface{})
@@ -282,11 +285,11 @@ func testV3CurlCampaign(cx ctlCtx) {
 	if err != nil {
 		cx.t.Fatal(err)
 	}
-	cargs := e2e.CURLPrefixArgs(cx.epc, "POST", e2e.CURLReq{
+	cargs := e2e.CURLPrefixArgsCluster(cx.epc.Cfg, cx.epc.Procs[rand.Intn(cx.epc.Cfg.ClusterSize)], "POST", e2e.CURLReq{
 		Endpoint: path.Join(cx.apiPrefix, "/election/campaign"),
 		Value:    string(cdata),
 	})
-	lines, err := e2e.SpawnWithExpectLines(cargs, cx.envMap, `"leader":{"name":"`)
+	lines, err := e2e.SpawnWithExpectLines(context.TODO(), cargs, cx.envMap, `"leader":{"name":"`)
 	if err != nil {
 		cx.t.Fatalf("failed post campaign request (%s) (%v)", cx.apiPrefix, err)
 	}

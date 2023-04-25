@@ -23,13 +23,14 @@ import (
 	"net/url"
 	"os"
 
-	"go.etcd.io/etcd/client/pkg/v3/logutil"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zapgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/grpclog"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
 )
 
 // GetLogger returns the logger.
@@ -201,7 +202,7 @@ func (cfg *Config) setupLogging() error {
 	return nil
 }
 
-// NewZapLoggerBuilder generates a zap logger builder that sets given loger
+// NewZapLoggerBuilder generates a zap logger builder that sets given logger
 // for embedded etcd.
 func NewZapLoggerBuilder(lg *zap.Logger) func(*Config) error {
 	return func(cfg *Config) error {
@@ -269,9 +270,11 @@ func setupLogRotation(logOutputs []string, logRotateConfigJSON string) error {
 		var syntaxError *json.SyntaxError
 		switch {
 		case errors.As(err, &syntaxError):
-			return fmt.Errorf("improperly formatted log rotation config: %w", err)
+			return fmt.Errorf("improperly formatted log rotation config: %v", err)
 		case errors.As(err, &unmarshalTypeError):
-			return fmt.Errorf("invalid log rotation config: %w", err)
+			return fmt.Errorf("invalid log rotation config: %v", err)
+		default:
+			return fmt.Errorf("fail to unmarshal log rotation config: %v", err)
 		}
 	}
 	zap.RegisterSink("rotate", func(u *url.URL) (zap.Sink, error) {

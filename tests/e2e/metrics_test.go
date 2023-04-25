@@ -45,12 +45,12 @@ func metricsTest(cx ctlCtx) {
 	for _, test := range []struct {
 		endpoint, expected string
 	}{
-		{"/metrics", fmt.Sprintf("etcd_mvcc_put_total 2")},
-		{"/metrics", fmt.Sprintf("etcd_debugging_mvcc_keys_total 1")},
-		{"/metrics", fmt.Sprintf("etcd_mvcc_delete_total 3")},
+		{"/metrics", "etcd_mvcc_put_total 2"},
+		{"/metrics", "etcd_debugging_mvcc_keys_total 1"},
+		{"/metrics", "etcd_mvcc_delete_total 3"},
 		{"/metrics", fmt.Sprintf(`etcd_server_version{server_version="%s"} 1`, version.Version)},
 		{"/metrics", fmt.Sprintf(`etcd_cluster_version{cluster_version="%s"} 1`, version.Cluster(version.Version))},
-		{"/metrics", fmt.Sprintf(`grpc_server_handled_total{grpc_code="Canceled",grpc_method="Watch",grpc_service="etcdserverpb.Watch",grpc_type="bidi_stream"} 6`)},
+		{"/metrics", `grpc_server_handled_total{grpc_code="Canceled",grpc_method="Watch",grpc_service="etcdserverpb.Watch",grpc_type="bidi_stream"} 6`},
 		{"/health", `{"health":"true","reason":""}`},
 	} {
 		i++
@@ -63,7 +63,7 @@ func metricsTest(cx ctlCtx) {
 		if err := ctlV3Watch(cx, []string{"k", "--rev", "1"}, []kvExec{{key: "k", val: "v"}}...); err != nil {
 			cx.t.Fatal(err)
 		}
-		if err := e2e.CURLGet(cx.epc, e2e.CURLReq{Endpoint: test.endpoint, Expected: test.expected, MetricsURLScheme: cx.cfg.MetricsURLScheme}); err != nil {
+		if err := e2e.CURLGet(cx.epc, e2e.CURLReq{Endpoint: test.endpoint, Expected: test.expected}); err != nil {
 			cx.t.Fatalf("failed get with curl (%v)", err)
 		}
 	}

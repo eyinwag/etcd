@@ -15,21 +15,16 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 )
 
-func TestCtlV3Put(t *testing.T)          { testCtl(t, putTest, withDialTimeout(7*time.Second)) }
-func TestCtlV3PutNoTLS(t *testing.T)     { testCtl(t, putTest, withCfg(*e2e.NewConfigNoTLS())) }
-func TestCtlV3PutClientTLS(t *testing.T) { testCtl(t, putTest, withCfg(*e2e.NewConfigClientTLS())) }
-func TestCtlV3PutClientAutoTLS(t *testing.T) {
-	testCtl(t, putTest, withCfg(*e2e.NewConfigClientAutoTLS()))
-}
-func TestCtlV3PutPeerTLS(t *testing.T) { testCtl(t, putTest, withCfg(*e2e.NewConfigPeerTLS())) }
 func TestCtlV3PutTimeout(t *testing.T) { testCtl(t, putTest, withDialTimeout(0)) }
 func TestCtlV3PutClientTLSFlagByEnv(t *testing.T) {
 	testCtl(t, putTest, withCfg(*e2e.NewConfigClientTLS()), withFlagByEnv())
@@ -37,45 +32,32 @@ func TestCtlV3PutClientTLSFlagByEnv(t *testing.T) {
 func TestCtlV3PutIgnoreValue(t *testing.T) { testCtl(t, putTestIgnoreValue) }
 func TestCtlV3PutIgnoreLease(t *testing.T) { testCtl(t, putTestIgnoreLease) }
 
-func TestCtlV3Get(t *testing.T)          { testCtl(t, getTest) }
-func TestCtlV3GetNoTLS(t *testing.T)     { testCtl(t, getTest, withCfg(*e2e.NewConfigNoTLS())) }
-func TestCtlV3GetClientTLS(t *testing.T) { testCtl(t, getTest, withCfg(*e2e.NewConfigClientTLS())) }
-func TestCtlV3GetClientAutoTLS(t *testing.T) {
-	testCtl(t, getTest, withCfg(*e2e.NewConfigClientAutoTLS()))
-}
-func TestCtlV3GetPeerTLS(t *testing.T) { testCtl(t, getTest, withCfg(*e2e.NewConfigPeerTLS())) }
 func TestCtlV3GetTimeout(t *testing.T) { testCtl(t, getTest, withDialTimeout(0)) }
-func TestCtlV3GetQuorum(t *testing.T)  { testCtl(t, getTest, withQuorum()) }
 
 func TestCtlV3GetFormat(t *testing.T)    { testCtl(t, getFormatTest) }
 func TestCtlV3GetRev(t *testing.T)       { testCtl(t, getRevTest) }
 func TestCtlV3GetKeysOnly(t *testing.T)  { testCtl(t, getKeysOnlyTest) }
 func TestCtlV3GetCountOnly(t *testing.T) { testCtl(t, getCountOnlyTest) }
 
-func TestCtlV3Del(t *testing.T)          { testCtl(t, delTest) }
-func TestCtlV3DelNoTLS(t *testing.T)     { testCtl(t, delTest, withCfg(*e2e.NewConfigNoTLS())) }
-func TestCtlV3DelClientTLS(t *testing.T) { testCtl(t, delTest, withCfg(*e2e.NewConfigClientTLS())) }
-func TestCtlV3DelPeerTLS(t *testing.T)   { testCtl(t, delTest, withCfg(*e2e.NewConfigPeerTLS())) }
-func TestCtlV3DelTimeout(t *testing.T)   { testCtl(t, delTest, withDialTimeout(0)) }
+func TestCtlV3DelTimeout(t *testing.T) { testCtl(t, delTest, withDialTimeout(0)) }
 
 func TestCtlV3GetRevokedCRL(t *testing.T) {
-	cfg := e2e.EtcdProcessClusterConfig{
-		ClusterSize:           1,
-		InitialToken:          "new",
-		ClientTLS:             e2e.ClientTLS,
-		IsClientCRL:           true,
-		ClientCertAuthEnabled: true,
-	}
-	testCtl(t, testGetRevokedCRL, withCfg(cfg))
+	cfg := e2e.NewConfig(
+		e2e.WithClusterSize(1),
+		e2e.WithClientConnType(e2e.ClientTLS),
+		e2e.WithClientRevokeCerts(true),
+		e2e.WithClientCertAuthority(true),
+	)
+	testCtl(t, testGetRevokedCRL, withCfg(*cfg))
 }
 
 func testGetRevokedCRL(cx ctlCtx) {
 	// test reject
-	if err := ctlV3Put(cx, "k", "v", ""); err == nil || !strings.Contains(err.Error(), "Error:") {
-		cx.t.Fatalf("expected reset connection on put, got %v", err)
-	}
+	err := ctlV3Put(cx, "k", "v", "")
+	require.ErrorContains(cx.t, err, "context deadline exceeded")
+
 	// test accept
-	cx.epc.Cfg.IsClientCRL = false
+	cx.epc.Cfg.Client.RevokeCerts = false
 	if err := ctlV3Put(cx, "k", "v", ""); err != nil {
 		cx.t.Fatal(err)
 	}
@@ -237,9 +219,13 @@ func getKeysOnlyTest(cx ctlCtx) {
 	if err := e2e.SpawnWithExpectWithEnv(cmdArgs, cx.envMap, "key"); err != nil {
 		cx.t.Fatal(err)
 	}
-	if err := e2e.SpawnWithExpects(cmdArgs, cx.envMap, "val"); err == nil {
-		cx.t.Fatalf("got value but passed --keys-only")
-	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	lines, err := e2e.SpawnWithExpectLines(ctx, cmdArgs, cx.envMap, "key")
+	require.NoError(cx.t, err)
+	require.NotContains(cx.t, lines, "val", "got value but passed --keys-only")
 }
 
 func getCountOnlyTest(cx ctlCtx) {
@@ -271,13 +257,14 @@ func getCountOnlyTest(cx ctlCtx) {
 	if err := e2e.SpawnWithExpects(cmdArgs, cx.envMap, "\"Count\" : 3"); err != nil {
 		cx.t.Fatal(err)
 	}
-	expected := []string{
-		"\"Count\" : 3",
-	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	cmdArgs = append(cx.PrefixArgs(), []string{"get", "--count-only", "key3", "--prefix", "--write-out=fields"}...)
-	if err := e2e.SpawnWithExpects(cmdArgs, cx.envMap, expected...); err == nil {
-		cx.t.Fatal(err)
-	}
+	lines, err := e2e.SpawnWithExpectLines(ctx, cmdArgs, cx.envMap, "\"Count\"")
+	require.NoError(cx.t, err)
+	require.NotContains(cx.t, lines, "\"Count\" : 3")
 }
 
 func delTest(cx ctlCtx) {

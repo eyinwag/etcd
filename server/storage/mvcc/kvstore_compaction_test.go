@@ -16,16 +16,16 @@ package mvcc
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"testing"
 	"time"
+
+	"go.uber.org/zap/zaptest"
 
 	"go.etcd.io/etcd/pkg/v3/traceutil"
 	"go.etcd.io/etcd/server/v3/lease"
 	betesting "go.etcd.io/etcd/server/v3/storage/backend/testing"
 	"go.etcd.io/etcd/server/v3/storage/schema"
-	"go.uber.org/zap"
 )
 
 func TestScheduleCompaction(t *testing.T) {
@@ -67,8 +67,12 @@ func TestScheduleCompaction(t *testing.T) {
 		},
 	}
 	for i, tt := range tests {
-		b, tmpPath := betesting.NewDefaultTmpBackend(t)
-		s := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
+		b, _ := betesting.NewDefaultTmpBackend(t)
+		s := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+		fi := newFakeIndex()
+		fi.indexCompactRespc <- tt.keep
+		s.kvindex = fi
+
 		tx := s.b.BatchTx()
 
 		tx.Lock()
@@ -79,7 +83,10 @@ func TestScheduleCompaction(t *testing.T) {
 		}
 		tx.Unlock()
 
-		s.scheduleCompaction(tt.rev, tt.keep)
+		_, err := s.scheduleCompaction(tt.rev, 0)
+		if err != nil {
+			t.Error(err)
+		}
 
 		tx.Lock()
 		for _, rev := range tt.wrevs {
@@ -95,14 +102,14 @@ func TestScheduleCompaction(t *testing.T) {
 		}
 		tx.Unlock()
 
-		cleanup(s, b, tmpPath)
+		cleanup(s, b)
 	}
 }
 
 func TestCompactAllAndRestore(t *testing.T) {
-	b, tmpPath := betesting.NewDefaultTmpBackend(t)
-	s0 := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
-	defer os.Remove(tmpPath)
+	b, _ := betesting.NewDefaultTmpBackend(t)
+	s0 := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
+	defer b.Close()
 
 	s0.Put([]byte("foo"), []byte("bar"), lease.NoLease)
 	s0.Put([]byte("foo"), []byte("bar1"), lease.NoLease)
@@ -127,12 +134,16 @@ func TestCompactAllAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s1 := NewStore(zap.NewExample(), b, &lease.FakeLessor{}, StoreConfig{})
+	s1 := NewStore(zaptest.NewLogger(t), b, &lease.FakeLessor{}, StoreConfig{})
 	if s1.Rev() != rev {
 		t.Errorf("rev = %v, want %v", s1.Rev(), rev)
 	}
 	_, err = s1.Range(context.TODO(), []byte("foo"), nil, RangeOptions{})
 	if err != nil {
 		t.Errorf("unexpect range error %v", err)
+	}
+	err = s1.Close()
+	if err != nil {
+		t.Fatal(err)
 	}
 }
